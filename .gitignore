@@ -1,0 +1,8 @@
+# Your local stack configuration — created from .env.example on first run and
+# holding your passwords. Never commit it.
+.env
+.env.*
+!.env.example
+
+# Only the Dokploy blueprint generator needs Node, and only its `yaml` dependency.
+node_modules/

@@ -1,0 +1,9 @@
+# The Caddyfile is bind-mounted raw into the caddy container, which cannot parse
+# CRLF. Force LF regardless of the checkout platform.
+Caddyfile text eol=lf
+
+# The shell scripts run in bash (Git Bash / WSL / Linux); CRLF breaks the shebang.
+*.sh text eol=lf
+
+# Their Windows twins are the opposite: cmd.exe wants CRLF.
+*.cmd text eol=crlf
