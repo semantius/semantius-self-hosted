@@ -29,24 +29,40 @@ A single **Caddy front door** on `WEB_PORT` fans out to the four HTTP services;
 PostgREST, Scalar and the idp keep their own host ports for direct access in
 local dev.
 
-```
-browser ──▶ Caddy (:3000) ──┬── /              ──▶ Admin SPA     (internal, no host port)
-                            ├── /idp/*         ──▶ semantius-idp (also direct :3001)
-                            ├── /.well-known/* ──▶ semantius-idp (issuer metadata, at the ORIGIN ROOT)
-                            ├── /gateway*      ──▶ semantius-idp (rewritten onto /idp/gateway/*;
-                            │                                    /gateway/rest fronts PostgREST)
-                            ├── /api-docs/*    ──▶ Scalar docs   (also direct :8080)
-                            └── /rest/*        ──▶ PostgREST     (also direct :3100, OpenAPI at /)
-                                                     │  SCRAM as semantius_authenticator
-                                                     │  SET ROLE authenticated | anon  (per request)
-                                                     ▼
-                                       Postgres 18 + pg_semantius  (:5434)
-                                                     ▲            ▲
-                                                     │            │ schema `idp`: users, OAuth
-                                                     │            │ clients, signing keys
-your app ─▶ PgBouncer   (:6432) ──transaction pooling┤            │
-            as semantius_authenticator (SET LOCAL ROLE)           │
-            as postgres — the idp's runtime pool ─────────────────┘
+```mermaid
+flowchart LR
+    browser(["browser"])
+    sql(["direct database access<br/><i>your app, psql, tooling</i>"])
+    caddy["Caddy<br/>:3000"]
+
+    subgraph edge["behind the front door"]
+        direction TB
+        spa["Frontend App<br/>static build on nginx :80<br/>not published — only via Caddy"]
+        idp["semantius-idp<br/>also direct :3001"]
+        scalar["Scalar docs<br/>also direct :8080"]
+        rest["PostgREST<br/>also direct :3100<br/>OpenAPI at /"]
+    end
+
+    subgraph data["data tier"]
+        direction TB
+        pgb["PgBouncer<br/>:6432 · transaction pooling"]
+        pg[("Postgres 18 + pg_semantius<br/>:5434")]
+    end
+
+    browser --> caddy
+    caddy -->|"/"| spa
+    caddy -->|"/idp/*"| idp
+    caddy -->|"/.well-known/*<br/><i>issuer metadata, at the ORIGIN ROOT</i>"| idp
+    caddy -->|"/gateway*<br/><i>rewritten onto /idp/gateway/*<br/>/gateway/rest fronts PostgREST</i>"| idp
+    caddy -->|"/api-docs/*"| scalar
+    caddy -->|"/rest/*"| rest
+    spa -.->|"/rest/* with Bearer jwt<br/>back through Caddy"| rest
+
+    idp -->|"runtime pool, as postgres<br/>schema idp: users, OAuth clients, signing keys"| pgb
+    sql -->|"pooled :6432 — as semantius_authenticator<br/>needs the SET LOCAL ROLE pattern"| pgb
+    sql -->|"unpooled :5434 — when you need session state<br/>LISTEN/NOTIFY, advisory locks, prepared statements"| pg
+    pgb --> pg
+    rest -->|"SCRAM as semantius_authenticator<br/>SET ROLE authenticated or anon, per request"| pg
 ```
 
 ## Quick start
@@ -270,16 +286,19 @@ issuer's startup.
 
 End to end, with the bundled issuer:
 
-```
-SPA (/)  ──authorization_code + PKCE S256──▶  idp (/idp)
-                                               │  signs an ES256 access token carrying
-                                               │  "role": "authenticated"  (a static claim,
-                                               │  jwt.claims in idp-config/config.jsonc)
-         ◀───────── access token ──────────────┘
-SPA  ──Authorization: Bearer <jwt>──▶  Caddy /rest/*  ──▶  PostgREST
-                                                            │ verifies ES256 vs /jwks/jwks.json
-                                                            │ reads the .role claim
-                                                            ▼  SET ROLE authenticated
+```mermaid
+sequenceDiagram
+    participant SPA as Admin SPA (/)
+    participant IDP as idp (/idp)
+    participant Caddy
+    participant PGRST as PostgREST
+
+    SPA->>IDP: authorization_code + PKCE S256
+    Note over IDP: signs an ES256 access token carrying<br/>"role": "authenticated" — a static claim,<br/>jwt.claims in idp-config/config.jsonc
+    IDP-->>SPA: access token
+    SPA->>Caddy: GET /rest/* with Authorization Bearer jwt
+    Caddy->>PGRST: proxied
+    Note over PGRST: verifies ES256 vs /jwks/jwks.json<br/>reads the .role claim<br/>SET ROLE authenticated
 ```
 
 That static `role` claim is the whole integration: without it PostgREST falls back
