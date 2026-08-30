@@ -917,7 +917,7 @@ configs:
             // The id must match VITE_OAUTH_CLIENT_ID on the `web` service; both
             // default to `public-client`.
             "clientId": "public-client",
-            "name": "Semantius Admin",
+            "name": "Semantius App",
             "type": "spa",
 
             // EXACT match, no wildcards. The SPA builds its redirect URI as
