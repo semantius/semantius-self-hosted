@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 /**
- * Dokploy blueprint builder — generates `dokploy/` from the local-dev stack at
- * the repository root.
+ * Deployment-variant blueprint builder — generates `<variant>/` from the
+ * local-dev stack at the repository root plus that variant's own directory.
  *
  * Sources (hand-maintained):
- *   docker-compose.yml   the ONE complete local stack
- *   Caddyfile            the front-door routes (bind-mounted locally)
- *   idp-config/*.jsonc   the identity provider's configuration (bind-mounted
- *                        locally; every .jsonc in the folder is picked up)
+ *   docker-compose.yml            the ONE complete local stack
+ *   Caddyfile                     the front-door routes (bind-mounted locally)
+ *   idp-config/*.jsonc            the identity provider's configuration
+ *                                 (bind-mounted locally; every .jsonc in the
+ *                                 folder is picked up)
+ *   variants/<variant>/template.toml   that variant's variables/env/domains
+ *   variants/<variant>/meta.json       that variant's gallery metadata
+ *   variants/<variant>/logo.svg       (optional; falls back to the repo root's)
  *
  * Output (GENERATED — committed, never hand-edited):
- *   dokploy/docker-compose.yml   deployment variant
- *   dokploy/template.toml        Dokploy variables/env/domains
- *   dokploy/meta.json            gallery metadata
+ *   <variant>/docker-compose.yml  deployment variant of the stack
+ *   <variant>/template.toml       copied from variants/<variant>/
+ *   <variant>/meta.json           copied from variants/<variant>/
  *
- * The transform, per the Dokploy blueprint rules (github.com/Dokploy/templates):
+ * The compose transform is variant-agnostic, per the Dokploy blueprint rules
+ * (github.com/Dokploy/templates):
  *   - drop every `ports:`      — Dokploy/Traefik routes by service name, not host ports
  *   - drop every `container_name:` — names must not collide across deployments
  *   - no custom networks       — Dokploy attaches its own
@@ -32,36 +37,46 @@
  * Comments in the source compose are preserved (yaml Document round-trip).
  *
  * Usage (from the repository root, the folder it builds):
- *   ./dokploy-build.sh          (Windows: dokploy-build.cmd)
+ *   ./dokploy-build.sh [variant]     (Windows: dokploy-build.cmd; default: dokploy)
  *
  * or directly, from anywhere:
- *   node scripts/dokploy-build.mjs
+ *   node scripts/dokploy-build.mjs [variant]
+ *
+ * A second variant is a DIRECTORY under variants/, not a fork of this script.
  */
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isMap, isSeq, parseDocument, Scalar, YAMLMap } from "yaml";
+
+// The variant to build: names variants/<variant>/ (the inputs) and <variant>/
+// (the committed output folder in the repo root).
+const VARIANT = process.argv[2] ?? "dokploy";
+if (!/^[a-z][a-z0-9-]*$/.test(VARIANT)) {
+  console.error(`\ndokploy-build FAILED — variant name must be a lowercase slug, got: ${VARIANT}\n`);
+  process.exit(1);
+}
 
 // Paths are resolved relative to THIS file, so the task works from any cwd.
 const SRC_DIR = new URL("../", import.meta.url);
-const OUT_DIR = new URL("dokploy/", SRC_DIR);
+const VARIANT_DIR = new URL(`variants/${VARIANT}/`, SRC_DIR);
+const OUT_DIR = new URL(`${VARIANT}/`, SRC_DIR);
 const src = (name) => new URL(name, SRC_DIR);
+const variantSrc = (name) => new URL(name, VARIANT_DIR);
 const out = (name) => new URL(name, OUT_DIR);
-
-/** Blueprint id — the folder name it gets in a Dokploy templates repo. */
-const BLUEPRINT_ID = "semantius";
 
 // ---------------------------------------------------------------------------
 // The generated compose header. Replaces the local-dev header, which documents
 // host ports and the bind-mounted config files — neither of which exists here.
 // ---------------------------------------------------------------------------
 const GENERATED_HEADER = ` GENERATED FILE — DO NOT EDIT.
- Built from ../docker-compose.yml + ../Caddyfile + ../idp-config/*.jsonc by
- \`./dokploy-build.sh\` (scripts/dokploy-build.mjs). Change those, then regenerate.
+ Built from ../docker-compose.yml + ../Caddyfile + ../idp-config/*.jsonc +
+ ../variants/${VARIANT}/ by \`./dokploy-build.sh ${VARIANT}\`
+ (scripts/dokploy-build.mjs). Change those, then regenerate.
 
- The Dokploy blueprint variant of the semantius stack. Same services as the
+ The ${VARIANT} blueprint variant of the semantius stack. Same services as the
  local-dev compose, minus everything a one-click deployment must not carry:
- host \`ports:\` (Dokploy's Traefik routes to the \`caddy\` service by name — see
- template.toml's [[config.domains]]), \`container_name:\` (would collide across
- deployments) and bind mounts (the Caddyfile and the identity provider's
+ host \`ports:\` (the platform's proxy routes to the \`caddy\` service by name —
+ see template.toml's [[config.domains]]), \`container_name:\` (would collide
+ across deployments) and bind mounts (the Caddyfile and the identity provider's
  configuration are embedded in the top-level \`configs:\` block below, so
  \`mounts = []\` in the template).
 
@@ -72,94 +87,6 @@ const GENERATED_HEADER = ` GENERATED FILE — DO NOT EDIT.
  are not.
 
  Requires docker compose >= 2.23.1 on the target server (inline configs.content).`;
-
-// ---------------------------------------------------------------------------
-// template.toml — static: no mounts, so nothing here depends on the compose.
-// Keep the env list in sync with the compose's variables.
-// ---------------------------------------------------------------------------
-const TEMPLATE_TOML = `# Dokploy template for the Semantius PostgREST stack.
-# Variables are generated per deployment; env is written to the stack's .env.
-
-[variables]
-main_domain = "\${domain}"
-postgres_password = "\${password:32}"
-authenticator_password = "\${password:32}"
-# Signs the identity provider's sessions and encrypts its JWT signing keys at
-# rest. Generated once per deployment and never rotated casually: changing it
-# logs every user out and makes the stored signing keys undecryptable.
-idp_secret = "\${password:64}"
-
-[config]
-# No bind mounts: the Caddyfile and the idp's config files ship inside
-# docker-compose.yml (configs.content).
-mounts = []
-env = [
-  # The stack brings its OWN issuer — the \`idp\` service, mounted at /idp on the
-  # front door — so a one-click deploy has a complete auth story with nothing to
-  # register anywhere. On first visit, https://\${main_domain}/idp serves a setup
-  # page: whoever completes it becomes the first administrator.
-  #
-  # The SPA discovers it at the origin root (caddy routes /.well-known/* there),
-  # and \`public-client\` is the SPA registered in idp-config/oauth_clients.jsonc.
-  "VITE_OAUTH_CONFIG=https://\${main_domain}/.well-known/openid-configuration",
-  "VITE_OAUTH_CLIENT_ID=public-client",
-  # The keys PostgREST validates tokens against: the idp, IN-NETWORK. Explicit
-  # rather than derived from discovery, because the jwks_uri the idp advertises
-  # carries its public URL, which the jwks-fetch container cannot resolve.
-  "JWKS_URL=http://idp:3000/idp/.well-known/jwks.json",
-  "IDP_SECRET=\${idp_secret}",
-  # The issuer, and the origin the SPA's redirect URIs are built from. Both must
-  # be the public front door — every URL the idp emits derives from them.
-  "IDP_BASE_URL=https://\${main_domain}/idp",
-  "PUBLIC_WEB_ORIGIN=https://\${main_domain}",
-  "POSTGRES_PASSWORD=\${postgres_password}",
-  "SEMANTIUS_AUTHENTICATOR_PASSWORD=\${authenticator_password}",
-  "POSTGRES_DB=semantius",
-  "SEMANTIUS_DB_VERSION=latest",
-  "SEMANTIUS_APP_VERSION=latest",
-  "SEMANTIUS_IDP_VERSION=latest",
-  # Public front door, including the /gateway/rest prefix the docs call through
-  # (the idp's authenticating proxy in front of PostgREST — an API key is enough
-  # there, which is what makes Scalar's "Test Request" usable on a deployment).
-  "PUBLIC_API_URL=https://\${main_domain}/gateway/rest",
-  # Load the Northwind demo module on first init so the deploy has data to show.
-  # Remove this line for an empty database.
-  "NWIND=TRUE",
-]
-
-# Traefik routes the domain to the caddy front door; caddy fans out to the SPA,
-# PostgREST (/rest/*, plus /gateway/rest/* for the same API through the idp's
-# authenticating proxy), Scalar (/api-docs/*) and the identity provider (/idp/*
-# plus the discovery documents at /.well-known/*).
-[[config.domains]]
-serviceName = "caddy"
-port = 80
-host = "\${main_domain}"
-`;
-
-// ---------------------------------------------------------------------------
-// meta.json — the gallery card (per-blueprint shape from Dokploy/templates).
-// ---------------------------------------------------------------------------
-const META_JSON = {
-  id: BLUEPRINT_ID,
-  name: "Semantius",
-  version: "1.0.0",
-  description:
-    "Semantic data-model platform: PostgreSQL 18 with the pg_semantius extension, " +
-    "a PostgREST HTTP API with OpenAPI docs, and the admin SPA — behind one Caddy " +
-    "front door. Auth is self-contained: a bundled OIDC/OAuth identity provider at " +
-    "/idp issues the bearer tokens and publishes the JWKS PostgREST validates them " +
-    "against, so the first visit to /idp creates the first administrator and nothing " +
-    "external has to be registered. Point VITE_OAUTH_CONFIG, VITE_OAUTH_CLIENT_ID " +
-    "and JWKS_URL elsewhere to use your own issuer instead.",
-  logo: "logo.svg",
-  links: {
-    github: "https://github.com/semantius/semantius-self-hosted",
-    website: "https://semantius.com",
-    docs: "https://github.com/semantius/semantius-self-hosted",
-  },
-  tags: ["database", "api", "postgres", "postgrest", "oidc", "low-code"],
-};
 
 // ---------------------------------------------------------------------------
 // Build
@@ -178,6 +105,34 @@ function readText(path) {
 function writeText(path, text) {
   writeFileSync(path, text.replace(/\r\n/g, "\n"));
 }
+
+// ---------------------------------------------------------------------------
+// The variant's own files: template.toml (variables/env/domains) and meta.json
+// (the gallery card). Hand-maintained under variants/<variant>/ and COPIED into
+// the output, so a second variant is a directory rather than a fork of this
+// script.
+// ---------------------------------------------------------------------------
+if (!existsSync(VARIANT_DIR)) fail(`no variants/${VARIANT}/ directory`);
+
+let TEMPLATE_TOML;
+try {
+  TEMPLATE_TOML = readText(variantSrc("template.toml"));
+} catch {
+  fail(`variants/${VARIANT}/template.toml is missing`);
+}
+
+let metaJsonText;
+let metaJson;
+try {
+  metaJsonText = readText(variantSrc("meta.json"));
+  metaJson = JSON.parse(metaJsonText);
+} catch (e) {
+  fail(`variants/${VARIANT}/meta.json is missing or not valid JSON: ${e.message}`);
+}
+if (!metaJson?.id) fail(`variants/${VARIANT}/meta.json has no "id"`);
+
+/** Blueprint id — the folder name it gets in a Dokploy templates repo. */
+const BLUEPRINT_ID = metaJson.id;
 
 // ---------------------------------------------------------------------------
 // What gets embedded. One group per service that bind-mounts configuration
@@ -416,6 +371,19 @@ for (const v of required) {
   }
 }
 
+// And the REVERSE: every variable the template env supplies must be consumed by
+// the compose. The check above only covers `${VAR:?}` (required, no default) —
+// a variable WITH a default, like IDP_DYNAMIC_ISSUER, would ship silently
+// defaulted (feature off, every check green) if its name were typo'd here.
+// `${NAME` also matches `${NAME:-…}` / `${NAME-…}` / `${NAME:?…}`.
+for (const v of templateEnv) {
+  if (!outCompose.includes(`\${${v}`)) {
+    problems.push(
+      `template.toml env sets ${v} but the generated compose never references \${${v}…} — typo, or a variable the stack no longer reads`,
+    );
+  }
+}
+
 // Every [[config.domains]] must point at a service that exists, on a port it serves.
 for (const block of TEMPLATE_TOML.split("[[config.domains]]").slice(1)) {
   const svcName = block.match(/serviceName\s*=\s*"([^"]+)"/)?.[1];
@@ -435,26 +403,30 @@ if (problems.length) {
 mkdirSync(OUT_DIR, { recursive: true });
 writeText(out("docker-compose.yml"), outCompose);
 writeText(out("template.toml"), TEMPLATE_TOML);
-writeText(out("meta.json"), `${JSON.stringify(META_JSON, null, 2)}\n`);
+writeText(out("meta.json"), metaJsonText.endsWith("\n") ? metaJsonText : `${metaJsonText}\n`);
 
-// The gallery card wants a logo next to meta.json. Copy one if the repo has it;
-// otherwise say so — the blueprint still deploys, it just renders without a logo.
-let logoNote = `  logo.svg          MISSING — drop the Semantius SVG at logo.svg in the repo root`;
-try {
-  const logo = readFileSync(src("logo.svg"), "utf8");
-  writeFileSync(out("logo.svg"), logo, "utf8");
-  logoNote = "  logo.svg";
-} catch {
-  // no logo in the repo yet
+// The gallery card wants a logo next to meta.json. The variant's own logo wins;
+// the repo root's is the shared fallback. Missing entirely is not fatal — the
+// blueprint still deploys, it just renders without a logo.
+let logoNote = `  logo.svg          MISSING — drop the Semantius SVG at logo.svg in the repo root (or variants/${VARIANT}/)`;
+for (const candidate of [variantSrc("logo.svg"), src("logo.svg")]) {
+  try {
+    const logo = readFileSync(candidate, "utf8");
+    writeFileSync(out("logo.svg"), logo, "utf8");
+    logoNote = "  logo.svg";
+    break;
+  } catch {
+    // try the next location
+  }
 }
 
 const embeddedNames = EMBED_GROUPS.flatMap((g) => g.files.map((f) => f.source));
 console.log(
-  `Wrote dokploy/ (stripped ${strippedPorts} ports:, ${strippedNames} container_name:, ${strippedReadOnly} read_only:)`,
+  `Wrote ${VARIANT}/ (stripped ${strippedPorts} ports:, ${strippedNames} container_name:, ${strippedReadOnly} read_only:)`,
 );
 console.log(`  docker-compose.yml    embeds ${embeddedNames.join(", ")}`);
-console.log(`  template.toml`);
-console.log(`  meta.json`);
+console.log(`  template.toml         from variants/${VARIANT}/`);
+console.log(`  meta.json             from variants/${VARIANT}/`);
 console.log(logoNote);
 console.log("");
 console.log("Publish it as a Dokploy one-click template either way:");

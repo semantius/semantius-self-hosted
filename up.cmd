@@ -81,9 +81,18 @@ echo.
 echo Ready (Semantius stack). Default ports (see .env):
 echo   Admin: http://localhost:3000/   (SPA; API at /rest/, docs at /api-docs/)
 echo   IdP  : http://localhost:3000/idp   (first run: create the first administrator)
-echo   API : http://localhost:3100/   (OpenAPI spec at /)
-echo   Docs: http://localhost:8080/   (Scalar API reference)
 echo   DBA : postgresql://postgres:^<POSTGRES_PASSWORD^>@localhost:5434/semantius
+
+REM The idp warns about its own shipped defaults, but
+REM SEMANTIUS_AUTHENTICATOR_PASSWORD never reaches it — only this script can
+REM notice it is still the dev value.
+findstr /b /c:"SEMANTIUS_AUTHENTICATOR_PASSWORD=devpassword" .env >nul 2>&1
+if not errorlevel 1 (
+  echo.
+  echo   WARNING: SEMANTIUS_AUTHENTICATOR_PASSWORD is still the shipped default
+  echo   ^('devpassword'^) - the login PostgREST uses against the database. Fine
+  echo   locally; change it in .env before exposing this deployment, then up.cmd.
+)
 exit /b 0
 
 :err

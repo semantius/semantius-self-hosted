@@ -28,8 +28,9 @@ name: semantius
 # `/idp/*` + `/.well-known/*` reach the identity provider (prefix INTACT there —
 # it is part of the issuer URL). The routes live in the sibling ./Caddyfile,
 # bind-mounted as a REGULAR file: edit it and `docker compose restart caddy` to
-# apply. This local-dev file additionally keeps every service's own host port
-# published for direct access.
+# apply. Only the DATA TIER keeps host ports here (postgres, pgbouncer — real
+# clients, no HTTP route caddy could serve); every HTTP service is reached
+# through the front door.
 #
 # THIS file is the local-dev stack. The DEPLOYMENT variant in ./dokploy/ is
 # GENERATED from this file + ./Caddyfile by `./dokploy-build.sh` (host ports and
@@ -179,10 +180,19 @@ services:
       # pg_semantius's own objects.
       IDP_SCHEMA_NAME: idp
       # THE ISSUER: scheme + host[:port] + the /idp mount path, no trailing slash.
-      # Everything absolute the idp emits derives from this, and it is also the
-      # default `aud` of its access tokens (jwt.audience in config.jsonc). Going
-      # live, set IDP_BASE_URL=https://yourdomain.com/idp in .env.
+      # Everything absolute the idp emits derives from this — with
+      # IDP_DYNAMIC_ISSUER below, everything except E-MAIL LINKS follows the
+      # request host instead. Going live, set
+      # IDP_BASE_URL=https://yourdomain.com/idp in .env (still required for
+      # e-mail links even with the dynamic issuer on).
       IDP_BASE_URL: ${IDP_BASE_URL:-http://localhost:${WEB_PORT:-3000}/idp}
+      # The default `aud` of its access tokens (jwt.audience in config.jsonc
+      # reads this). A FIXED URI, deliberately independent of the issuer host so
+      # tokens verify the same on every domain the stack is reached on; the
+      # SPA's VITE_OAUTH_AUDIENCE below defaults to the same value, which keeps
+      # the two sides in sync. (Seeding pg_semantius's `_settings.jwt_aud`? Seed
+      # it with EXACTLY this value.)
+      IDP_JWT_AUDIENCE: ${IDP_JWT_AUDIENCE:-semantius://api}
       # What the healthcheck below probes. Two things about this URL:
       #
       # /readyz, NOT /healthz. /healthz is liveness — "the process is up" — and it
@@ -208,7 +218,22 @@ services:
       # ORIGIN of the admin SPA — no path, no trailing slash.
       # idp-config/oauth_clients.jsonc builds the SPA's redirect URIs from it, and
       # those are matched EXACTLY, so it has to be the origin the browser really uses.
+      # It MAY carry the idp's `{host}` template (PUBLIC_WEB_ORIGIN=https://{host}),
+      # which the idp expands per request to the host the browser is on — that is
+      # what the Dokploy variant sets, so a domain attached after deploy works
+      # without an env edit. Requires IDP_DYNAMIC_ISSUER=true below.
       PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN:-http://localhost:${WEB_PORT:-3000}}
+      # Derive the ISSUER per request from the host the request arrived on,
+      # instead of always answering with IDP_BASE_URL. Default OFF, and off is
+      # the safe answer: turn it on ONLY when every hop in front of the idp
+      # (1) overwrites X-Forwarded-Host with the host it matched, (2) forwards
+      # only Hosts matching a configured route, (3) serves a CLOSED set of host
+      # values, and (4) nothing reaches the container around that edge. Dokploy's
+      # Traefik satisfies all four (the generated variant turns this on); this
+      # stack's own Caddy on a bare SITE_ADDRESS=<domain> does NOT — it answers
+      # every Host — so leave it off there. E-mail links always stay on
+      # IDP_BASE_URL by design, whatever this is set to.
+      IDP_DYNAMIC_ISSUER: ${IDP_DYNAMIC_ISSUER:-false}
       # Optional. Without it the idp runs DEGRADED: password reset, e-mail
       # verification and every notification are disabled and hidden in the UI (and
       # auth.requireEmailVerification is forced off). Fine locally, where an admin
@@ -221,12 +246,8 @@ services:
       # these files as `configs:` instead (no bind mounts there), so regenerate
       # after every change to keep the two in sync.
       - ./idp-config:/config:ro
-    ports:
-      # Container port 3000; the front door owns 3000 on the host, so this is
-      # published at 3001. Direct access is a local-dev convenience only — every URL the idp
-      # emits carries the front door's origin + /idp, so signing in has to go
-      # through http://localhost:${WEB_PORT}/idp.
-      - "${IDP_PORT:-3001}:3000"
+    # No host port: every URL the idp emits carries the front door's origin +
+    # /idp, so it is only ever correct to reach it through caddy on WEB_PORT.
     # Nothing writes to the image. The one writable path it needs holds scratch,
     # so a tmpfs rather than a volume — it should not survive a restart.
     read_only: true
@@ -295,8 +316,14 @@ services:
       # below. With `:-` an empty value would silently take the default back and
       # the external-issuer route would be unreachable.
       JWKS_URL: ${JWKS_URL-http://idp:3000/idp/.well-known/jwks.json}
-      # Only consulted when JWKS_URL is empty. Defaults to the front door's origin
-      # root, which caddy routes to the bundled idp.
+      # Only consulted when JWKS_URL is empty — the external-issuer path, where
+      # .env sets VITE_OAUTH_CONFIG to that issuer's discovery URL. Here it must
+      # be ABSOLUTE: this container curls it directly, so the relative default
+      # the `web` service uses (resolved by the browser) is meaningless to it.
+      # The absolute fallback below is therefore kept, even though it names the
+      # front door's host-side address — it only fires on the misconfiguration
+      # "JWKS_URL emptied but no discovery URL set", where failing the fetch
+      # loudly is the job.
       VITE_OAUTH_CONFIG: ${VITE_OAUTH_CONFIG:-http://localhost:${WEB_PORT:-3000}/.well-known/openid-configuration}
     volumes:
       - jwks:/jwks
@@ -308,7 +335,7 @@ services:
         url="$${JWKS_URL}"
         if [ -z "$${url}" ]; then
           if [ -z "$${VITE_OAUTH_CONFIG}" ]; then
-            echo "ERROR: set JWKS_URL, or VITE_OAUTH_CONFIG (the OIDC discovery URL)." >&2
+            echo "ERROR: set JWKS_URL, or VITE_OAUTH_CONFIG (the issuer's ABSOLUTE OIDC discovery URL — this container fetches it directly, so a relative value cannot work here)." >&2
             exit 1
           fi
           echo "JWKS_URL empty — discovering jwks_uri from $${VITE_OAUTH_CONFIG} ..."
@@ -316,7 +343,7 @@ services:
                   | tr -d '[:space:]' | sed 's/.*"jwks_uri":"//; s/".*//')"
           case "$${url}" in
             http://*|https://*) echo "Discovered jwks_uri: $${url}" ;;
-            *) echo "ERROR: no jwks_uri in the discovery document at $${VITE_OAUTH_CONFIG}." >&2; exit 1 ;;
+            *) echo "ERROR: no jwks_uri in the discovery document at $${VITE_OAUTH_CONFIG} — is that an ABSOLUTE URL this container can fetch? (A relative discovery URL only works for the browser.)" >&2; exit 1 ;;
           esac
         fi
         echo "Fetching JWKS from $${url} ..."
@@ -376,33 +403,41 @@ services:
       # decides which one the generated calls use. Going live, set PUBLIC_API_URL
       # to the PUBLIC front-door URL INCLUDING that prefix, e.g.
       # https://yourdomain.com/gateway/rest. See README / .env.example.
+      #
+      # This value CANNOT be relative: PostgREST parses it into Swagger 2.0's
+      # separate host/basePath/schemes fields and treats a malformed value as
+      # fatal. (The Scalar docs' spec `url` below is a different setting with a
+      # RELATIVE default — the browser resolves that one.) So on a domain
+      # attached after deploy, the docs page loads but "Test Request" calls the
+      # host advertised HERE until PUBLIC_API_URL is updated.
       PGRST_OPENAPI_SERVER_PROXY_URI: "${PUBLIC_API_URL:-http://localhost:${WEB_PORT:-3000}/gateway/rest}"
       # PGRST_JWT_AUD left unset: rbac.uid() enforces aud in-DB (same as bearer
       # mode). Set it to one of the token's aud values to also check at this layer.
-    ports:
-      - "${POSTGREST_PORT:-3100}:3000"
     volumes:
       - jwks:/jwks:ro
 
   # --- Scalar API reference (OpenAPI docs) -----------------------------------
-  # Renders PostgREST's Swagger 2.0 spec. The `url` is fetched by the BROWSER, so
-  # it must be browser-reachable — the stack's own front door (`/gateway/rest/` on
-  # caddy, the default) or your public URL for it — NOT the in-network `postgrest`
-  # hostname. Keep it in sync with PGRST_OPENAPI_SERVER_PROXY_URI above via the
-  # same PUBLIC_API_URL: fetching the spec from one route while it advertises
-  # another is how the docs end up describing an API they do not call. Both go
-  # through the idp gateway, so the browser's idp session cookie is enough to read
-  # the spec AND to try a call — no key to paste, which is the point of pointing
-  # the docs at the gateway rather than at /rest.
+  # Renders PostgREST's Swagger 2.0 spec. The `url` is fetched by the BROWSER
+  # from the /api-docs/ page, so a RELATIVE default is exactly right: it resolves
+  # against whatever origin the docs are open on, which caddy routes to the
+  # gateway on every host it fronts — a domain attached after deploy needs no
+  # edit for the docs to load. This is a DIFFERENT setting from
+  # PGRST_OPENAPI_SERVER_PROXY_URI above, which cannot be relative (PostgREST
+  # parses it into Swagger host/basePath) and therefore stays absolute — so on a
+  # freshly attached domain the spec loads here while "Test Request" still calls
+  # the host the spec advertises. Set DOCS_SPEC_URL only to point the docs at a
+  # spec somewhere else entirely; it goes through the idp gateway, so the
+  # browser's idp session cookie is enough to read the spec AND to try a call —
+  # no key to paste, which is the point of the gateway route rather than /rest.
   #
   # One more thing is needed for "Test Request" to work, and it lives in the
   # ../Caddyfile: Scalar sends EVERY content type the spec declares in one Accept
   # header, which makes PostgREST answer 406 PGRST116 on every multi-row endpoint.
   # See the @pgrstDocsAccept rule there.
   #
-  # Reached through the front door at /api-docs/ this is same-origin
-  # with the spec, so it no longer depends on PostgREST's permissive CORS. The host
-  # port below stays published for direct access / back-compat.
+  # Reached through the front door at /api-docs/ this is same-origin with the
+  # spec, so it does not depend on PostgREST's permissive CORS. No host port —
+  # the front door is the only route in.
   scalar:
     image: scalarapi/api-reference:latest
     pull_policy: always
@@ -412,9 +447,7 @@ services:
       postgrest:
         condition: service_started
     environment:
-      API_REFERENCE_CONFIG: '{"sources":[{"url":"${PUBLIC_API_URL:-http://localhost:${WEB_PORT:-3000}/gateway/rest}/","title":"Semantius API"}]}'
-    ports:
-      - "${DOCS_PORT:-8080}:8080"
+      API_REFERENCE_CONFIG: '{"sources":[{"url":"${DOCS_SPEC_URL:-/gateway/rest}/","title":"Semantius API"}]}'
 
   # --- Admin SPA -------------------------------------------------------------
   # Static single-page admin app (nginx, container port 80). SPA ONLY — it does no
@@ -442,13 +475,14 @@ services:
       # gateway route is for the docs and for key-holding scripts.
       VITE_API_BASE_URL: /rest
       # OIDC discovery URL + client id — the SPA resolves the OAuth endpoints from
-      # this at boot. Both default to the BUNDLED idp: caddy serves its discovery
-      # document from the front door's ORIGIN ROOT, and `public-client` is the SPA
-      # registered in ./idp-config/oauth_clients.jsonc. Going live there is nothing
-      # to change here — set IDP_BASE_URL / PUBLIC_WEB_ORIGIN to your domain and
-      # leave these alone — unless you are replacing the issuer, in which case point
-      # them at yours (and see JWKS_URL on jwks-fetch above).
-      VITE_OAUTH_CONFIG: ${VITE_OAUTH_CONFIG:-http://localhost:${WEB_PORT:-3000}/.well-known/openid-configuration}
+      # this at boot. Both default to the BUNDLED idp. The discovery default is
+      # RELATIVE on purpose: the SPA fetch()es it, so a relative URL resolves
+      # against window.location.origin — and caddy serves the document from the
+      # origin root on EVERY host it fronts, so a domain attached after deploy
+      # discovers the issuer with no env edit. Replacing the issuer, point
+      # VITE_OAUTH_CONFIG at yours — ABSOLUTE, because the same variable also
+      # feeds jwks-fetch above, which curls it directly (and see JWKS_URL there).
+      VITE_OAUTH_CONFIG: ${VITE_OAUTH_CONFIG:-/.well-known/openid-configuration}
       VITE_OAUTH_CLIENT_ID: ${VITE_OAUTH_CLIENT_ID:-public-client}
       # The RFC 8707 resource the SPA asks its access tokens to be issued FOR —
       # it becomes their `aud`. LOAD-BEARING: the SPA always sends one, falling
@@ -456,13 +490,17 @@ services:
       # idp rejects a resource it has never heard of with
       # `invalid_target: requested resource not authorized` — a "Login Error" on
       # the callback page and nothing in the SPA to explain it. So name the idp's
-      # registered default audience, which is the issuer itself (`jwt.audience`
-      # in idp-config/config.jsonc, also defaulted from IDP_BASE_URL). With an
-      # external issuer, set VITE_OAUTH_AUDIENCE in .env to the audience that
-      # issuer expects — or to its issuer URL if it has no separate API audience.
+      # registered default audience: the FIXED URI semantius://api (`jwt.audience`
+      # in idp-config/config.jsonc, same default). Fixed and host-independent on
+      # purpose — an audience derived from the issuer goes stale the moment a
+      # domain is attached after deploy, and an unregistered audience is exactly
+      # that bare "Login Error". Override BOTH sides together via
+      # IDP_JWT_AUDIENCE in .env; with an external issuer, set
+      # VITE_OAUTH_AUDIENCE alone to the audience that issuer expects — or to
+      # its issuer URL if it has no separate API audience.
       # `-` and not `:-` again: an explicitly EMPTY VITE_OAUTH_AUDIENCE has to
       # reach the SPA as empty, which is how you ask for its own built-in fallback.
-      VITE_OAUTH_AUDIENCE: ${VITE_OAUTH_AUDIENCE-${IDP_BASE_URL:-http://localhost:${WEB_PORT:-3000}/idp}}
+      VITE_OAUTH_AUDIENCE: ${VITE_OAUTH_AUDIENCE-${IDP_JWT_AUDIENCE:-semantius://api}}
       # SINGLE SPACE — LOAD-BEARING, do not "tidy" it to "" or delete the line. The
       # SPA's cloud control plane is opt-OUT: an UNSET **or EMPTY** value still
       # activates it (the runtime-env reader ignores empty strings and falls through

@@ -38,6 +38,18 @@
     // upstream only.
     "trustProxy": true,
 
+    // Derive the ISSUER (and every browser-facing URL except e-mail links) per
+    // request from the arriving host, instead of always from baseUrl. Default
+    // OFF; the compose default keeps it off. Safe ONLY when every hop in front
+    // of the idp (1) OVERWRITES X-Forwarded-Host with the host it matched,
+    // (2) forwards only Hosts matching a configured route, (3) serves a CLOSED
+    // set of host values, and (4) nothing reaches the container around that
+    // edge. Dokploy's Traefik satisfies all four and the generated variant sets
+    // IDP_DYNAMIC_ISSUER=true; a bare-SITE_ADDRESS Caddy deployment does NOT
+    // (it answers every Host). Distinct from trustProxy above, which asserts
+    // the hop INTO the idp and stays true in every variant of this stack.
+    "dynamicIssuer": "${env:IDP_DYNAMIC_ISSUER:-false}",
+
     // Left at the default `false`, which is right for both shipped cases: an
     // https baseUrl in production, and http://localhost:3000/idp locally —
     // localhost is exempt from the https requirement. Turn it on ONLY for a
@@ -128,9 +140,11 @@
     // /idp/login are exactly those cases. The idp's own default is "/account",
     // its profile page, which is the wrong destination here: nobody signs in to
     // this stack to look at the identity provider, they sign in to use the admin
-    // SPA. An ABSOLUTE URL is supported precisely for this "the idp sits beside
-    // the product" arrangement, so send them to the product's root.
-    "defaultRedirect": "${env:PUBLIC_WEB_ORIGIN:-http://localhost:3000}/"
+    // SPA. A CONFIGURED relative redirect is ORIGIN-relative (never re-based
+    // under /idp), so "/" is the SPA at the root of whatever host the user is
+    // on — which also keeps working on a domain attached after deploy, where an
+    // absolute URL built from a boot-time env would not.
+    "defaultRedirect": "/"
   },
 
   // Invite-only: administrators create users from /idp/admin. Self-registration
@@ -147,11 +161,16 @@
     "algorithm": "ES256",
 
     // REQUIRED. The default RFC 8707 resource, applied when a client sends no
-    // `resource` parameter — it becomes the access token's `aud`. Keep it equal
-    // to the issuer. pg_semantius's rbac.uid() checks `aud` only when
-    // `_settings.jwt_aud` is seeded (off by default); if you seed it, seed it
-    // with EXACTLY this value.
-    "audience": "${env:IDP_BASE_URL:-http://localhost:3000/idp}",
+    // `resource` parameter — it becomes the access token's `aud`. A FIXED URI,
+    // deliberately NOT derived from the issuer: with server.dynamicIssuer the
+    // issuer follows the request host, and an audience coupled to a base URL
+    // goes stale the moment a domain is attached after deploy (the SPA then
+    // requests an unregistered resource — `invalid_target`, surfacing as a bare
+    // "Login Error"). The SPA's VITE_OAUTH_AUDIENCE defaults to the same value
+    // via the same env var, keeping the two sides in sync. pg_semantius's
+    // rbac.uid() checks `aud` only when `_settings.jwt_aud` is seeded (off by
+    // default); if you seed it, seed it with EXACTLY this value.
+    "audience": "${env:IDP_JWT_AUDIENCE:-semantius://api}",
 
     // THIS is what makes PostgREST accept the token: a static `role` claim in
     // every access token, which PostgREST reads (PGRST_JWT_ROLE_CLAIM_KEY=.role)
@@ -204,12 +223,12 @@
   // claims the same name, which adopts that row and makes it file-owned.
   "gateways": {
     // PostgREST, over the compose network: the SERVICE NAME and the CONTAINER
-    // port, which is also how caddy addresses it. Not localhost and not a
-    // published host port — inside the idp container `localhost:3000` is the idp
-    // ITSELF (the request loops back to the origin root, where the base-path
-    // guard 307s it to /idp/...), and `localhost:3100` is nothing at all
-    // (connection refused, surfaced as `bad_gateway`); 3100 is the host-side
-    // publish of this very container port, reachable only from the host.
+    // port, which is also how caddy addresses it. Not localhost — inside the
+    // idp container `localhost:3000` is the idp ITSELF (the request loops back
+    // to the origin root, where the base-path guard 307s it to /idp/...), and
+    // any other localhost port is nothing at all (connection refused, surfaced
+    // as `bad_gateway`). PostgREST has no host port either way; the compose
+    // network is the only route to it besides caddy.
     //
     // Plain http, so a bearer token minted from a caller's API key crosses the
     // network in clear. Acceptable because that network is private to this

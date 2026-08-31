@@ -25,9 +25,11 @@ deploy really is just one compose file (see below).
 > [semantius/semantius](https://github.com/semantius/semantius). This repo is only
 > the deployment stack; it consumes the published images.
 
-A single **Caddy front door** on `WEB_PORT` fans out to the four HTTP services;
-PostgREST, Scalar and the idp keep their own host ports for direct access in
-local dev.
+A single **Caddy front door** on `WEB_PORT` fans out to the four HTTP services —
+the **only** published HTTP port; every URL the stack emits carries the front
+door's origin, so that is the only address that is ever correct to use. Only the
+data tier (Postgres, PgBouncer) publishes ports of its own, for SQL clients
+Caddy cannot front.
 
 ```mermaid
 flowchart LR
@@ -37,10 +39,10 @@ flowchart LR
 
     subgraph edge["behind the front door"]
         direction TB
-        spa["Frontend App<br/>static build on nginx :80<br/>not published — only via Caddy"]
-        idp["semantius-idp<br/>also direct :3001"]
-        scalar["Scalar docs<br/>also direct :8080"]
-        rest["PostgREST<br/>also direct :3100<br/>OpenAPI at /"]
+        spa["Frontend App<br/>static build on nginx :80"]
+        idp["semantius-idp"]
+        scalar["Scalar docs"]
+        rest["PostgREST<br/>OpenAPI at /"]
     end
 
     subgraph data["data tier"]
@@ -83,9 +85,9 @@ at **http://localhost:3000/** with it.
 - **Front door:** http://localhost:3000 — admin SPA at `/`, API at `/rest/`
   (or `/gateway/rest/` for the same API through the idp's authenticating proxy,
   which accepts an API key), docs at `/api-docs/`, identity provider at `/idp/`.
-- Direct, for local dev: **API** http://localhost:3100 · **Docs**
-  http://localhost:8080 · **IdP** http://localhost:3001 (sign-in only works
-  through the front door — see [below](#the-idp-service--the-bundled-identity-provider))
+  It is the only published HTTP port — every URL the stack emits carries its
+  origin, so PostgREST, Scalar and the idp are deliberately not reachable any
+  other way.
 
 Then, day to day — every command is a script in **this folder**, `.sh` for bash and
 `.cmd` for Windows ([full table below](#management-scripts)):
@@ -152,10 +154,10 @@ with `docker compose`, the **container** name with plain `docker`:
 |---|---|---|---|
 | `postgres` | `ghcr.io/semantius/postgres:${SEMANTIUS_DB_VERSION}` (built from [`docker-postgres/`](https://github.com/semantius/semantius/tree/main/docker-postgres)) | **5434** | PG18 with the extension installed + roles/pg_hba/authenticator/nwind baked in |
 | `pgbouncer` | `edoburu/pgbouncer:latest` | **6432** | transaction-pooled `semantius_authenticator` endpoint for apps that talk SQL directly ([see below](#the-pgbouncer-service--a-pooled-endpoint-for-external-apps)) |
-| `idp` | `ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION}` | **3001** | **the bundled OIDC/OAuth issuer**, served at `/idp` — signs the bearer tokens and publishes the JWKS ([see below](#the-idp-service--the-bundled-identity-provider)). Shares `postgres` in its own `idp` schema; configured by [`idp-config/*.jsonc`](idp-config/) |
+| `idp` | `ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION}` | — | **the bundled OIDC/OAuth issuer**, served at `/idp` — signs the bearer tokens and publishes the JWKS ([see below](#the-idp-service--the-bundled-identity-provider)). Shares `postgres` in its own `idp` schema; configured by [`idp-config/*.jsonc`](idp-config/) |
 | `jwks-fetch` | `curlimages/curl:latest` | — | **one-shot**: downloads the issuer JWKS to a file PostgREST can read (see below) |
-| `postgrest` | `postgrest/postgrest:latest` | **3000** | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/` |
-| `scalar` | `scalarapi/api-reference:latest` | **8080** | renders PostgREST's Swagger 2.0 spec as browsable docs |
+| `postgrest` | `postgrest/postgrest:latest` | — | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/`. Reach it through `caddy` (`/rest/`, `/gateway/rest/`) |
+| `scalar` | `scalarapi/api-reference:latest` | — | renders PostgREST's Swagger 2.0 spec as browsable docs. Reach it through `caddy` (`/api-docs/`) |
 | `web` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static admin SPA (nginx). **SPA only** — it proxies nothing; reach it through `caddy`. Runtime config is written to `config.js` at container start from its `VITE_*` env |
 | `caddy` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`idp-config/config.jsonc`](idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](Caddyfile) — edit it and `docker compose restart caddy` |
 
@@ -183,12 +185,14 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 |---|---|---|---|
 | `IDP_SECRET` | **(required)** — dev default in `.env.example` | `idp` | Signs the idp's sessions **and encrypts its JWT signing keys at rest**. ≥ 32 random bytes (`openssl rand -base64 48`). Change it for anything shared or exposed — and treat rotating it as a key rotation: it logs everyone out and makes the stored signing keys undecryptable. |
 | `SEMANTIUS_IDP_VERSION` | `latest` | `idp` | Tag of the `semantius-idp` image. Re-pulled on every `create`; pin for reproducible/server deploys. |
-| `IDP_BASE_URL` | `http://localhost:${WEB_PORT}/idp` | `idp`, `web` | The **issuer**: scheme + host + the `/idp` mount path, no trailing slash. Every absolute URL the idp emits derives from it, and it is the default `aud` of its tokens. ⚠️ **Set going live** (`https://yourdomain.com/idp`). |
-| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. ⚠️ **Set going live.** |
+| `IDP_BASE_URL` | `http://localhost:${WEB_PORT}/idp` | `idp` | The **canonical issuer**: scheme + host + the `/idp` mount path, no trailing slash. Every absolute URL the idp emits derives from it — **e-mail links always do**, even with `IDP_DYNAMIC_ISSUER` on. ⚠️ **Set going live** (`https://yourdomain.com/idp`), and update it once after attaching a different domain (for the e-mail links). |
+| `IDP_DYNAMIC_ISSUER` | `false` | `idp` | Derive the issuer (and every browser-facing URL **except e-mail links**) per request from the arriving host. Setting it `true` is *your* assertion about the ingress — see [Serving more than one domain](#serving-more-than-one-domain-idp_dynamic_issuer) below. The Dokploy blueprint sets it. |
+| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
 | `RESEND_API_KEY` | *(unset)* | `idp` | Optional. Without it the idp runs **degraded**: password reset, e-mail verification and all notifications are disabled and hidden. Fine locally (admins create users); set it for anything real. |
-| `VITE_OAUTH_CONFIG` | the bundled idp's `/.well-known/openid-configuration`, at the front-door root | `web`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it, **and** `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty. Change it only to **replace** the bundled issuer. |
+| `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `web`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
 | `VITE_OAUTH_CLIENT_ID` | `public-client` | `web` | Public OAuth client id. Matches the SPA registered in [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc). |
-| `VITE_OAUTH_AUDIENCE` | `${IDP_BASE_URL}` | `web` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
+| `VITE_OAUTH_AUDIENCE` | `${IDP_JWT_AUDIENCE}` (`semantius://api`) | `web` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
+| `IDP_JWT_AUDIENCE` | `semantius://api` | `idp`, `web` | The audience the bundled idp registers and mints as `aud`, and the default of `VITE_OAUTH_AUDIENCE` — one var moves both sides. A **fixed URI** on purpose: an audience derived from the issuer URL goes stale the moment a domain is attached after deploy. Seeding `_settings.jwt_aud`? Seed exactly this value. |
 | `JWKS_URL` | `http://idp:3000/idp/.well-known/jwks.json` | `jwks-fetch` | Keys PostgREST validates bearer tokens against. Defaults to the bundled idp **in-network** — explicit rather than derived, because the `jwks_uri` the idp advertises carries its *public* URL, which that container can't resolve. Set it **empty** (present in `.env`, no value) to derive from `VITE_OAUTH_CONFIG`'s discovery document instead — what an external issuer wants. The compose uses `${JWKS_URL-…}`, not `${JWKS_URL:-…}`, so an empty value stays empty. |
 | `POSTGRES_PASSWORD` | **(required)** | `postgres` | `postgres` DBA login password. The stack refuses to start if unset. |
 | `POSTGRES_DB` | `semantius` | `postgres`, `postgrest` | Database created on first init and served by the API. |
@@ -198,21 +202,39 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 | `NWIND` | *(unset)* | `postgres` | Set to **any** non-empty value (e.g. `TRUE`) to load the optional Northwind demo module on first init. Takes effect only on a **fresh** data volume (init runs once). |
 | `POSTGRES_PORT` | `5434` | `postgres` | Host port for Postgres (5432/5433 belong to pgdocker's cli/ext stacks). |
 | `PGBOUNCER_PORT` | `6432` | `pgbouncer` | Host port for the transaction-pooled PgBouncer endpoint. |
-| `POSTGREST_PORT` | `3100` | `postgrest`, `scalar` | Host port for the PostgREST HTTP API (OpenAPI spec at `/`). Deliberately clear of 3000-300x: a Vite dev server told to use 3000 walks upward until it finds a free port, so a host port parked in that range eventually collides with one. |
-| `IDP_PORT` | `3001` | `idp` | Host port for the identity provider (the front door owns 3000). For poking at the container only — the idp's own URLs all carry the front door's origin, so signing in must go through `/idp`. |
-| `DOCS_PORT` | `8080` | `scalar` | Host port for the Scalar docs site. |
-| `WEB_PORT` | `3000` | `caddy` | Host port of the **front door**: `/` the SPA, `/rest/*` the API, `/api-docs/*` the docs. The SPA itself has no host port. |
-| `SITE_ADDRESS` | `:80` | `caddy` | The address Caddy serves inside the container. `:80` is plain HTTP — right for local dev and behind anything that terminates TLS (Dokploy/Traefik). On a **bare VPS** set your bare domain for automatic HTTPS, then publish `80:80` + `443:443` on `caddy` instead of `WEB_PORT`. |
-| `PUBLIC_API_URL` | `http://localhost:${WEB_PORT}/gateway/rest` | `postgrest`, `scalar` | Browser-reachable base URL of the API **as the docs see it**. Used for BOTH the OpenAPI spec's advertised server and the docs' spec `url` — both resolved by the browser, so NEVER the in-network `postgrest` hostname. It names the **gateway** route rather than the direct `/rest`, which is what lets the docs' "Test Request" work with an API key from `/idp/account/api-keys`. Going live, set the public front-door URL **including** `/gateway/rest`. |
+| `WEB_PORT` | `3000` | `caddy` | Host port of the **front door** — the only published HTTP port: `/` the SPA, `/rest/*` the API, `/api-docs/*` the docs, `/idp/*` the identity provider. PostgREST, Scalar, the idp and the SPA have no host ports of their own. |
+| `SITE_ADDRESS` | `:80` | `caddy` | The address Caddy serves inside the container. `:80` is plain HTTP — right for local dev and behind anything that terminates TLS (Dokploy/Traefik). On a **bare VPS** set your bare domain for automatic HTTPS, then publish `80:80` + `443:443` on `caddy` instead of `WEB_PORT`. That topology answers **every** Host pointed at the server, so it is **not** eligible for `IDP_DYNAMIC_ISSUER`. |
+| `PUBLIC_API_URL` | `http://localhost:${WEB_PORT}/gateway/rest` | `postgrest` | The base URL the OpenAPI spec **advertises** (`PGRST_OPENAPI_SERVER_PROXY_URI`). Cannot be relative — PostgREST parses it into the spec's host/basePath — and never the in-network `postgrest` hostname, because the browser resolves it for "Test Request". It names the **gateway** route rather than the direct `/rest`, which is what lets "Test Request" work with an API key from `/idp/account/api-keys`. Going live, set the public front-door URL **including** `/gateway/rest`. |
+| `DOCS_SPEC_URL` | `/gateway/rest` (relative) | `scalar` | Where the docs page fetches the spec itself. Relative on purpose: the browser resolves it against whatever host the docs are open on, so the docs keep loading on a domain attached after deploy — while "Test Request" calls the host advertised by `PUBLIC_API_URL` until that is updated. Rarely needs setting. |
 
 > **Going live?** With the bundled issuer, what a real deployment must set is
 > **`IDP_BASE_URL`** and **`PUBLIC_WEB_ORIGIN`** (your public front door, with and
 > without the `/idp` path), a real **`IDP_SECRET`**, and the passwords. The
-> `VITE_OAUTH_*` trio and `JWKS_URL` all follow from those and can be left alone.
+> `VITE_OAUTH_*` trio, `IDP_JWT_AUDIENCE` and `JWKS_URL` are host-independent and
+> can be left alone.
 > To use **your own issuer** instead, set `VITE_OAUTH_CONFIG`,
 > `VITE_OAUTH_CLIENT_ID` and `VITE_OAUTH_AUDIENCE` to its values and `JWKS_URL` to
 > empty (so the keys are derived from its discovery document) — the `idp` service
 > keeps running but nothing points at it.
+
+### Secrets you must change before exposing this deployment
+
+The stack ships **working dev defaults** so `./create.sh` runs with zero setup —
+which also means nothing *forces* you to change them. Three secrets carry such a
+default; the idp warns on its admin pages while the first two are unchanged, and
+`up`/`create` print a warning for the third (which never reaches the idp):
+
+| Secret | Shipped default | Generate a real one | If you leave it |
+|---|---|---|---|
+| `IDP_SECRET` | `dev-only-idp-secret-change-me-…` | `openssl rand -base64 48` | Anyone with the default can forge idp **sessions** and decrypt the stored **JWT signing keys** — i.e. mint tokens PostgREST accepts. ⚠️ **Ordering trap:** set it **before first run.** Rotating it later logs everyone out and makes the stored signing keys undecryptable (treat that as a key rotation, not a config tweak). |
+| `POSTGRES_PASSWORD` | `postgres` | `openssl rand -base64 24` (URL-safe — no `@ : / ? #` or spaces) | Full-DBA access to the database for anyone who can reach `POSTGRES_PORT`. |
+| `SEMANTIUS_AUTHENTICATOR_PASSWORD` | `devpassword` | `openssl rand -base64 24` (URL-safe) | The login PostgREST uses; with `PGBOUNCER_PORT` published, anyone who can reach it gets the same database access as the API's `authenticated` role. |
+
+Change them in `.env`, then `./up.sh` (passwords baked into the database at
+first init — `POSTGRES_PASSWORD`, `SEMANTIUS_AUTHENTICATOR_PASSWORD` — are only
+*created* fresh by `./create.sh`; on a live stack change them in the database
+too, or recreate). The [Dokploy blueprint](#dokploy-one-click-template)
+generates all three per deployment, so this table is about hand-managed `.env`s.
 
 **Not `.env`-driven — hardcoded in the compose:**
 
@@ -305,10 +327,12 @@ That static `role` claim is the whole integration: without it PostgREST falls ba
 to `anon` and every data request is *permission denied*. An **external** issuer has
 to be configured to emit the same claim.
 
-The token's `aud` is the issuer URL (`jwt.audience`, defaulted from
-`IDP_BASE_URL`). `PGRST_JWT_AUD` is deliberately left unset — `rbac.uid()` enforces
-the audience **in the database**, and only when `_settings.jwt_aud` is seeded (off
-by default). If you seed it, seed it with exactly the `IDP_BASE_URL` value.
+The token's `aud` is the **fixed URI** `semantius://api` (`jwt.audience`,
+defaulted from `IDP_JWT_AUDIENCE`) — deliberately independent of the issuer
+host, so tokens verify the same on every domain the stack is reached on.
+`PGRST_JWT_AUD` is deliberately left unset — `rbac.uid()` enforces the audience
+**in the database**, and only when `_settings.jwt_aud` is seeded (off by
+default). If you seed it, seed it with exactly the `IDP_JWT_AUDIENCE` value.
 
 PostgREST logs in as **`semantius_authenticator`** (SCRAM, `NOSUPERUSER
 NOINHERIT`) and `SET ROLE`s per request:
@@ -485,6 +509,54 @@ Four settings there are load-bearing and worth knowing:
 localhost is exempt from the https requirement. Turn it on only to reach a dev
 stack over a LAN IP (`http://192.168.x.x:3000/idp`), never on a real deployment.
 
+### Serving more than one domain (`IDP_DYNAMIC_ISSUER`)
+
+By default the issuer is **one URL**: `IDP_BASE_URL`, fixed at boot, whatever
+host a request arrives on. `IDP_DYNAMIC_ISSUER=true` makes the idp derive the
+issuer **per request** from the host the request arrived on — discovery,
+sign-in, authorize, token, the SPA's redirect URIs (via the
+`PUBLIC_WEB_ORIGIN=https://{host}` template) and the API all follow every domain
+your edge routes, with no restart and no config edit. This is what lets a
+Dokploy deployment take a domain attached *after* deploy and just work.
+
+**What deliberately does not follow the request host: e-mail links.** Password
+reset and verification links are built from `IDP_BASE_URL` at boot — that is the
+property that keeps a forged `Host` header out of a password-reset link. After
+attaching a domain, update `IDP_BASE_URL` once for the e-mails.
+
+Turning it on is **your assertion** that all four of these hold for every path
+a request can take to the idp:
+
+1. every hop in front of the idp **overwrites** `X-Forwarded-Host` with the
+   host it matched;
+2. the edge forwards only Hosts matching a configured router;
+3. the edge serves a **closed set** of Host values;
+4. nothing reaches the container bypassing that edge.
+
+Condition (1) is the one that gets stated wrongly, and it is *not* "a proxy
+validates `Host`": the idp reads `X-Forwarded-Host` first, and nginx, an AWS ALB
+and a GCP load balancer all **pass an inbound `X-Forwarded-Host` through
+untouched** unless configured. For nginx the required line is literally:
+
+```nginx
+proxy_set_header X-Forwarded-Host $host;
+```
+
+Dokploy's Traefik satisfies all four conditions, and the generated blueprint
+sets `IDP_DYNAMIC_ISSUER=true`. A **bare-`SITE_ADDRESS` Caddy deployment does
+not** — Caddy configured with one `SITE_ADDRESS=<domain>` still answers *every*
+Host pointed at the server, failing condition (3) — so leave the flag off there.
+
+Two more consequences worth knowing, both by design:
+
+- **Sessions and tokens are host-scoped.** The session cookie is host-only, so
+  each domain signs in separately; access tokens carry the issuing host as
+  `iss` and outstanding ones stop verifying on other hosts for up to their
+  15-minute TTL after you switch domains.
+- **Social login callbacks stay canonical.** Providers register one callback
+  URL, built from `IDP_BASE_URL` — social sign-in works on the canonical host
+  only, and the idp logs a boot warning about it when both are enabled.
+
 ### Adding an OAuth client
 
 Add an entry to [`oauth_clients.jsonc`](idp-config/oauth_clients.jsonc) and
@@ -568,7 +640,7 @@ each has a `.sh` (bash) and `.cmd` (Windows) form.
 | `status` | container status | `ps -a` |
 | `destroy` | remove containers, network, and **both volumes** (keeps the image; confirm prompt). The inverse of `create` | `down -v` |
 | `jwks-refresh` | re-fetch the issuer JWKS + restart PostgREST to pick up rotated keys (see [Key rotation](#the-jwks-fetch-service--why-it-exists)) | `run --rm jwks-fetch` + `restart postgrest` |
-| `dokploy-build` | regenerate the [`dokploy/`](#dokploy-one-click-template) blueprint from `docker-compose.yml` + `Caddyfile` + `idp-config/*.jsonc` (needs Node) | — |
+| `dokploy-build` | regenerate the [`dokploy/`](#dokploy-one-click-template) blueprint from `docker-compose.yml` + `Caddyfile` + `idp-config/*.jsonc` + `variants/dokploy/` (needs Node; takes a variant name, default `dokploy`) | — |
 
 `create` and `up` also take **`--no-pull`**, which runs whatever
 `ghcr.io/semantius/postgres` tag is already present locally instead of pulling —
@@ -589,10 +661,14 @@ npm install            # once — the generator's only dependency is `yaml`
 ```
 
 It is **generated** from `docker-compose.yml` + `Caddyfile` +
-`idp-config/*.jsonc` by
+`idp-config/*.jsonc` + [`variants/dokploy/`](variants/dokploy/) (that variant's
+own `template.toml` and `meta.json`) by
 [`scripts/dokploy-build.mjs`](scripts/dokploy-build.mjs) — which the script above
 is a thin wrapper around (it needs Node) — and **committed**. Never hand-edit
-anything under `dokploy/` — change the sources and regenerate. The transform:
+anything under `dokploy/` — change the sources and regenerate. The builder takes
+the variant name as an argument (default `dokploy`), so a second deployment
+variant is a directory under `variants/`, not a fork of the script. The
+transform:
 
 - **strips every `ports:`** — a blueprint publishes nothing; Dokploy's Traefik
   routes to a service by name;
@@ -617,14 +693,22 @@ anything under `dokploy/` — change the sources and regenerate. The transform:
 | File | What it is |
 |---|---|
 | `dokploy/docker-compose.yml` | the stack, portless, with the Caddyfile and the idp config embedded |
-| `dokploy/template.toml` | Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `caddy`:80 mapping |
-| `dokploy/meta.json` | gallery card: id, name, description, logo, links, tags |
+| `dokploy/template.toml` | copied from `variants/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `caddy`:80 mapping |
+| `dokploy/meta.json` | copied from `variants/dokploy/` — gallery card: id, name, description, logo, links, tags |
 
-The generated env wires the **bundled issuer** to the deployment's domain
-(`IDP_BASE_URL=https://${main_domain}/idp`, `PUBLIC_WEB_ORIGIN=https://${main_domain}`,
-a per-deployment `IDP_SECRET`), so a one-click deploy has a complete auth story:
-visit `/idp` once and the first administrator is created. It also loads the
-Northwind demo module (`NWIND=TRUE`) — drop that line for an empty database.
+The generated env wires the **bundled issuer** to the deployment
+(`IDP_BASE_URL=https://${main_domain}/idp`, a per-deployment `IDP_SECRET`), so a
+one-click deploy has a complete auth story: visit `/idp` once and the first
+administrator is created. It also turns on the per-request issuer
+(`IDP_DYNAMIC_ISSUER=true` — safe under Dokploy's Traefik, see
+[Serving more than one domain](#serving-more-than-one-domain-idp_dynamic_issuer))
+and templates the SPA's redirect URIs on the request host
+(`PUBLIC_WEB_ORIGIN=https://{host}`), so a domain attached **after** deploy in
+Dokploy's UI works immediately — discovery, sign-in, the SPA and the API all
+follow it. The one thing that stays on the deploy-time domain is **e-mail
+links**: update `IDP_BASE_URL` once after attaching your real domain. It also
+loads the Northwind demo module (`NWIND=TRUE`) — drop that line for an empty
+database.
 
 **Publishing it**, either way:
 
@@ -653,9 +737,7 @@ deno task migrate --apps test --env pgrest     # deploy more apps on top of _cor
 apps you name. After each migration the CLI fires `NOTIFY pgrst, 'reload schema'`,
 which the running PostgREST picks up automatically (`PGRST_DB_CHANNEL_ENABLED=true`).
 
-> ⚠️ **Change `IDP_SECRET`.** `.env.example` ships a dev default so the stack
-> starts out of the box, exactly like `POSTGRES_PASSWORD`. It signs the identity
-> provider's sessions and encrypts its signing keys — generate a real one
-> (`openssl rand -base64 48`) before anything shared or network-exposed, and do it
-> *before* first boot: rotating it later logs everyone out and makes the stored
-> signing keys undecryptable.
+> ⚠️ **Change the shipped secrets.** `.env.example` ships dev defaults so the
+> stack starts out of the box — see
+> [Secrets you must change before exposing this deployment](#secrets-you-must-change-before-exposing-this-deployment),
+> and set `IDP_SECRET` *before* first boot.

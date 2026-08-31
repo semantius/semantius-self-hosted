@@ -35,6 +35,13 @@
       // for (the caddy front door, no path, no trailing slash). Going live, set
       // PUBLIC_WEB_ORIGIN=https://yourdomain.com in .env; add a second entry
       // here if the same deployment is reached on more than one origin.
+      //
+      // With server.dynamicIssuer on (config.jsonc), PUBLIC_WEB_ORIGIN may be
+      // the TEMPLATE https://{host}: the idp substitutes the whole host of the
+      // request being authorized, so every domain the edge routes gets a
+      // matching redirect URI. `{host}` must stand for the entire host
+      // component and `*` stays refused — this is not a wildcard. The Dokploy
+      // variant ships exactly that value.
       "redirectUris": ["${env:PUBLIC_WEB_ORIGIN:-http://localhost:3000}/oauth2_callback"],
 
       // Where the idp may send the browser after an RP-initiated logout. Three
