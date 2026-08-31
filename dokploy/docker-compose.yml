@@ -435,7 +435,13 @@ services:
     # Re-pull :latest on every `up` (create). Without this, compose only
     # pulls when the image is missing locally, so create would keep running a stale
     # cached SPA. NOT set on `postgres`, which is built locally by build.sh.
-    pull_policy: always
+    # Same escape hatch as the idp's IDP_PULL_POLICY: to run an image you built
+    # yourself (semantius-app's docker/build.sh tags `semantius-app:local`;
+    # retag it under the ghcr name), point SEMANTIUS_APP_VERSION at that tag
+    # AND set APP_PULL_POLICY=missing — otherwise the pull replaces your build
+    # with the registry's copy of the same tag, or fails outright on a tag
+    # never pushed.
+    pull_policy: ${APP_PULL_POLICY:-always}
     restart: unless-stopped
     environment:
       # Same-origin API base: the browser calls http://<host>:${WEB_PORT}/rest/...
