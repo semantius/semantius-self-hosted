@@ -10,5 +10,12 @@ if /i not "%ans%"=="y" (
   exit /b 0
 )
 
-docker compose down -v
+REM --remove-orphans as well: a bare "down" only removes containers for services
+REM CURRENTLY in the compose file, so one left behind by a RENAMED service (the SPA
+REM was "web" before it became "nginx") survives the wipe -- and then collides with
+REM the new service over its "container_name:", failing the next up with
+REM Conflict. The container name /semantius-app is already in use. up.cmd passes
+REM the same flag, but that one is too late: compose drops orphans AFTER creating
+REM the service containers, i.e. after the conflict has already fired.
+docker compose down -v --remove-orphans
 echo Removed the PostgREST stack's containers, network, and data + jwks volumes (image kept).

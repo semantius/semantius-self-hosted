@@ -11,5 +11,12 @@ case "$ans" in
   *) echo "Cancelled."; exit 0 ;;
 esac
 
-docker compose down -v
+# --remove-orphans as well: a bare `down` only removes containers for services
+# CURRENTLY in the compose file, so one left behind by a RENAMED service (the SPA
+# was `web` before it became `nginx`) survives the wipe — and then collides with
+# the new service over its `container_name:`, failing the next up with
+# "Conflict. The container name /semantius-app is already in use". up.sh passes
+# the same flag, but that one is too late: compose drops orphans AFTER creating
+# the service containers, i.e. after the conflict has already fired.
+docker compose down -v --remove-orphans
 echo "Removed the PostgREST stack's containers, network, and data + jwks volumes (image kept)."

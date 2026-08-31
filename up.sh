@@ -86,7 +86,6 @@ echo
 echo "Ready (Semantius stack)."
 echo "  Image : ghcr.io/semantius/postgres:${IMAGE_TAG}  ($([ "$PULL" = 1 ] && echo pulled || echo 'local tag, not pulled'))"
 echo "  Admin : http://localhost:${WEB_PORT:-3000}/   (SPA; API at /rest/, docs at /api-docs/)"
-echo "  IdP   : http://localhost:${WEB_PORT:-3000}/idp   (first run: create the first administrator)"
 echo "  DBA   : postgresql://postgres:<POSTGRES_PASSWORD>@localhost:${POSTGRES_PORT:-5434}/semantius"
 
 # The idp warns about its own shipped defaults (IDP_SECRET, POSTGRES_PASSWORD)

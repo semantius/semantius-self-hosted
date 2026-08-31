@@ -27,13 +27,13 @@
     // Every absolute URL the idp emits — discovery, e-mail links, social
     // callbacks — derives from this and never from the Host header. The cookie
     // Path used to as well; since the idp's D97 it is `cookiePath` below.
-    // The default matches caddy's default front door; going live, set
+    // The default matches Caddy's default front door; going live, set
     // IDP_BASE_URL=https://yourdomain.com/idp in .env.
     "baseUrl": "${env:IDP_BASE_URL:-http://localhost:3000/idp}",
     "host": "0.0.0.0",
     "port": 3000,
 
-    // The idp always sits behind this stack's caddy front door, so honour its
+    // The idp always sits behind this stack's Caddy front door, so honour its
     // X-Forwarded-* (Caddy 2 sets them by default). `true` trusts the immediate
     // upstream only.
     "trustProxy": true,
@@ -65,7 +65,7 @@
     // spelled out because the defaults are the reason /gateway works.
     //
     // cookiePath defaults to "/" — the WHOLE HOST, not the /idp mount. That is
-    // what lets caddy serve the gateway at the origin root: a cookie scoped to
+    // what lets Caddy serve the gateway at the origin root: a cookie scoped to
     // /idp would not be sent to /gateway/*, and the idp treats a missing
     // session as ANONYMOUS rather than as an error, so the calls would have
     // quietly succeeded as nobody. Narrow it to "/idp" only if you want the
@@ -206,7 +206,7 @@
   // --- authenticating reverse proxies ---------------------------------------
   //
   // `/idp/gateway/<name>/<rest>` streams every method to `<url>/<rest>`, and
-  // caddy also serves it at the short root-level `/gateway/<name>/*` (see
+  // Caddy also serves it at the short root-level `/gateway/<name>/*` (see
   // ../Caddyfile). A caller carrying `x-api-key` and no `Authorization` has the
   // key exchanged for a session JWT — the same exchange GET /idp/api/auth/token
   // performs — and the JWT injected as `Authorization: Bearer`. That is how a
@@ -223,12 +223,12 @@
   // claims the same name, which adopts that row and makes it file-owned.
   "gateways": {
     // PostgREST, over the compose network: the SERVICE NAME and the CONTAINER
-    // port, which is also how caddy addresses it. Not localhost — inside the
+    // port, which is also how Caddy addresses it. Not localhost — inside the
     // idp container `localhost:3000` is the idp ITSELF (the request loops back
     // to the origin root, where the base-path guard 307s it to /idp/...), and
     // any other localhost port is nothing at all (connection refused, surfaced
     // as `bad_gateway`). PostgREST has no host port either way; the compose
-    // network is the only route to it besides caddy.
+    // network is the only route to it besides Caddy.
     //
     // Plain http, so a bearer token minted from a caller's API key crosses the
     // network in clear. Acceptable because that network is private to this

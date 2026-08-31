@@ -32,7 +32,7 @@
       // EXACT match, no wildcards. The SPA builds its redirect URI as
       // `${window.location.origin}/oauth2_callback`, so this has to be the
       // origin the browser actually uses — which is what PUBLIC_WEB_ORIGIN is
-      // for (the caddy front door, no path, no trailing slash). Going live, set
+      // for (the Caddy front door, no path, no trailing slash). Going live, set
       // PUBLIC_WEB_ORIGIN=https://yourdomain.com in .env; add a second entry
       // here if the same deployment is reached on more than one origin.
       //

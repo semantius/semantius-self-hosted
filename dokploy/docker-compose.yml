@@ -1,23 +1,34 @@
-# GENERATED FILE — DO NOT EDIT.
-# Built from ../docker-compose.yml + ../Caddyfile + ../idp-config/*.jsonc +
-# ../variants/dokploy/ by `./dokploy-build.sh dokploy`
-# (scripts/dokploy-build.mjs). Change those, then regenerate.
+# The Semantius stack: PostgreSQL with the pg_semantius extension, a PostgREST
+# HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth identity
+# provider — all behind one Caddy front door.
 
-# The dokploy blueprint variant of the semantius stack. Same services as the
-# local-dev compose, minus everything a one-click deployment must not carry:
-# host `ports:` (the platform's proxy routes to the `caddy` service by name —
-# see template.toml's [[config.domains]]), `container_name:` (would collide
-# across deployments) and bind mounts (the Caddyfile and the identity provider's
-# configuration are embedded in the top-level `configs:` block below, so
-# `mounts = []` in the template).
+# ROUTING. Attach your domain to the `semantius` service on port 80 — it is the
+# only way in, and it fans out internally:
+#   /              the admin SPA          /idp/*         the identity provider
+#   /rest/*        the API                /.well-known/* its discovery documents
+#   /api-docs/*    the API docs           /gateway/*     the API, via the idp's
+#                                                        authenticating proxy
 
-# One further difference, forced rather than chosen: a service carrying an inline
-# `content:` config cannot also be `read_only`, because compose delivers such a
-# config by writing it into the container filesystem. `read_only` is therefore
-# dropped from those services here — cap_drop, no-new-privileges and the tmpfs
-# are not.
+# REQUIRED ENVIRONMENT — everything else has a working default:
+#   POSTGRES_PASSWORD  the database superuser
+#   IDP_SECRET         signs the identity provider's sessions and encrypts its
+#                      JWT signing keys — >= 32 random bytes, set BEFORE first
+#                      boot (changing it later logs everyone out and makes the
+#                      stored signing keys undecryptable)
+# Both must be URL-safe (no `@ : / ? #` or spaces) — they are spliced into
+# connection strings. Importing this as a template generates both for you.
 
-# Requires docker compose >= 2.23.1 on the target server (inline configs.content).
+# FIRST RUN. No account exists yet, and there is nothing special to visit: open
+# the deployment and the app's sign-in bounce lands on the setup page, which
+# stands in for the login page until somebody completes it. Whoever does becomes
+# the first administrator. Set IDP_BASE_URL to your real domain (plus /idp) once
+# you have one; it is the base of every e-mail link.
+
+# REQUIRES docker compose >= 2.23.1 on the target server (inline configs.content).
+
+# GENERATED — edits here apply to this deployment only and are lost on the next
+# import. The source is github.com/semantius/semantius-self-hosted; this file is
+# built from it by scripts/dokploy-build.mjs.
 
 name: semantius
 
@@ -108,7 +119,7 @@ services:
   # owns its whole auth story out of the box — no external IdP, no public throwaway
   # test issuer.
   #
-  # MOUNTED AT /idp on the caddy front door (see ../Caddyfile), and the prefix is
+  # MOUNTED AT /idp on the Caddy front door (see ../Caddyfile), and the prefix is
   # NOT stripped: `server.baseUrl` in idp-config/config.jsonc carries it, and every
   # link, cookie Path, e-mail URL and redirect the idp emits derives from that one
   # value. Its discovery documents are ALSO served from the ORIGIN ROOT
@@ -130,9 +141,11 @@ services:
   # documentation. The `${env:...}` placeholders inside those files resolve from
   # the environment below.
   #
-  # FIRST RUN: no bootstrap account, and no password in the environment. While the
-  # user table is empty the idp serves a setup page at /idp — whoever completes it
-  # becomes the first administrator.
+  # FIRST RUN: no bootstrap account, and no password in the environment. Nothing
+  # to visit here either — open the SPA at the front door and its sign-in bounce
+  # lands on the setup page for as long as the user table is empty (the idp
+  # redirects /idp/login there), and whoever completes it becomes the first
+  # administrator.
   idp:
     image: ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION:-latest}
     # `always` keeps a released tag honest — it is re-pulled on every create/up.
@@ -370,7 +383,7 @@ services:
       # http://0.0.0.0:3000/... which the browser rejects (ERR_ADDRESS_INVALID).
       # The browser resolves this URL, so it must be browser-reachable — NOT the
       # in-network `postgrest` hostname. The default is this stack's OWN front door
-      # (caddy on WEB_PORT), and specifically its /gateway/rest route — the idp's
+      # (the front door on WEB_PORT), and specifically its /gateway/rest route — the idp's
       # authenticating proxy — NOT the direct /rest one. That is what makes the
       # docs usable with an API key: the gateway exchanges an `x-api-key` for a
       # bearer token, so "Test Request" needs a key rather than a hand-minted JWT.
@@ -394,7 +407,7 @@ services:
   # --- Scalar API reference (OpenAPI docs) -----------------------------------
   # Renders PostgREST's Swagger 2.0 spec. The `url` is fetched by the BROWSER
   # from the /api-docs/ page, so a RELATIVE default is exactly right: it resolves
-  # against whatever origin the docs are open on, which caddy routes to the
+  # against whatever origin the docs are open on, which Caddy routes to the
   # gateway on every host it fronts — a domain attached after deploy needs no
   # edit for the docs to load. This is a DIFFERENT setting from
   # PGRST_OPENAPI_SERVER_PROXY_URI above, which cannot be relative (PostgREST
@@ -425,12 +438,12 @@ services:
 
   # --- Admin SPA -------------------------------------------------------------
   # Static single-page admin app (nginx, container port 80). SPA ONLY — it does no
-  # proxying of its own; the `caddy` front door below routes /rest/* and /api-docs/*
+  # proxying of its own; the `semantius` front door below routes /rest/* and /api-docs/*
   # and falls through to here for everything else. Deliberately NOT published on a
-  # host port — reach it through caddy on WEB_PORT. Runtime config is generated
+  # host port — reach it through the front door on WEB_PORT. Runtime config is generated
   # into config.js at container start from the VITE_* env below (the image's
   # gen-config.sh), so one image serves every environment.
-  web:
+  nginx:
     image: ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION:-latest}
     # Re-pull :latest on every `up` (create). Without this, compose only
     # pulls when the image is missing locally, so create would keep running a stale
@@ -445,7 +458,7 @@ services:
     restart: unless-stopped
     environment:
       # Same-origin API base: the browser calls http://<host>:${WEB_PORT}/rest/...
-      # and caddy proxies /rest/* -> postgrest:3000 with the prefix stripped, so no
+      # and Caddy proxies /rest/* -> postgrest:3000 with the prefix stripped, so no
       # CORS and no need to publish PostgREST's port. Doesn't change going live.
       #
       # The DIRECT route, not /gateway/rest: the SPA holds a real OAuth access
@@ -456,7 +469,7 @@ services:
       # OIDC discovery URL + client id — the SPA resolves the OAuth endpoints from
       # this at boot. Both default to the BUNDLED idp. The discovery default is
       # RELATIVE on purpose: the SPA fetch()es it, so a relative URL resolves
-      # against window.location.origin — and caddy serves the document from the
+      # against window.location.origin — and Caddy serves the document from the
       # origin root on EVERY host it fronts, so a domain attached after deploy
       # discovers the issuer with no env edit. Replacing the issuer, point
       # VITE_OAUTH_CONFIG at yours — ABSOLUTE, because the same variable also
@@ -489,6 +502,14 @@ services:
       # the app -> true self-hosted mode (OAuth endpoints from VITE_OAUTH_CONFIG
       # discovery, the API from VITE_API_BASE_URL).
       VITE_CONTROL_PLANE_URL: " "
+      # Which built-in user menu the SPA renders: cloud | self_hosted | custom.
+      # UNSET OR EMPTY MEANS `cloud`, which shows the hosted account/billing
+      # entries that do not exist here — so this stack pins `self_hosted`, the
+      # same reason VITE_CONTROL_PLANE_URL above is pinned. Not .env-driven:
+      # this deployment IS the self-hosted backend. `custom` is the escape
+      # hatch and needs VITE_UI_CUSTOMIZER (a JSON user menu) set alongside it;
+      # any other value is a hard config error and the SPA refuses to boot.
+      VITE_BACKEND_TYPE: self_hosted
       # Ignore the image's baked demo placeholders so a missing var fails loudly
       # instead of silently using .env.example defaults (e.g. your-postgrest-api.com).
       ENV_FILE: /dev/null
@@ -501,7 +522,7 @@ services:
 
   # --- Caddy front door ------------------------------------------------------
   # The single public entrypoint. Routes (see the sibling ./Caddyfile):
-  #   /              -> web:80          (the SPA)
+  #   /              -> nginx:80        (the SPA)
   #   /rest/*        -> postgrest:3000  (prefix stripped by handle_path)
   #   /gateway/*     -> idp:3000        (the idp's authenticating proxy; /gateway/rest
   #                                      fronts that same PostgREST)
@@ -511,7 +532,7 @@ services:
   #                                      has to live at the origin root)
   # No depends_on: Caddy re-resolves upstream DNS per request, so an upstream that
   # hasn't started yet is a brief 502 that self-heals — no start-order coupling.
-  caddy:
+  semantius:
     image: caddy:2-alpine
     pull_policy: always
     restart: unless-stopped
@@ -661,7 +682,7 @@ configs:
       	}
 
       	handle {
-      		reverse_proxy web:80
+      		reverse_proxy nginx:80
       	}
       }
   idp_config:
@@ -695,13 +716,13 @@ configs:
           // Every absolute URL the idp emits — discovery, e-mail links, social
           // callbacks — derives from this and never from the Host header. The cookie
           // Path used to as well; since the idp's D97 it is `cookiePath` below.
-          // The default matches caddy's default front door; going live, set
+          // The default matches Caddy's default front door; going live, set
           // IDP_BASE_URL=https://yourdomain.com/idp in .env.
           "baseUrl": "$${env:IDP_BASE_URL:-http://localhost:3000/idp}",
           "host": "0.0.0.0",
           "port": 3000,
 
-          // The idp always sits behind this stack's caddy front door, so honour its
+          // The idp always sits behind this stack's Caddy front door, so honour its
           // X-Forwarded-* (Caddy 2 sets them by default). `true` trusts the immediate
           // upstream only.
           "trustProxy": true,
@@ -733,7 +754,7 @@ configs:
           // spelled out because the defaults are the reason /gateway works.
           //
           // cookiePath defaults to "/" — the WHOLE HOST, not the /idp mount. That is
-          // what lets caddy serve the gateway at the origin root: a cookie scoped to
+          // what lets Caddy serve the gateway at the origin root: a cookie scoped to
           // /idp would not be sent to /gateway/*, and the idp treats a missing
           // session as ANONYMOUS rather than as an error, so the calls would have
           // quietly succeeded as nobody. Narrow it to "/idp" only if you want the
@@ -874,7 +895,7 @@ configs:
         // --- authenticating reverse proxies ---------------------------------------
         //
         // `/idp/gateway/<name>/<rest>` streams every method to `<url>/<rest>`, and
-        // caddy also serves it at the short root-level `/gateway/<name>/*` (see
+        // Caddy also serves it at the short root-level `/gateway/<name>/*` (see
         // ../Caddyfile). A caller carrying `x-api-key` and no `Authorization` has the
         // key exchanged for a session JWT — the same exchange GET /idp/api/auth/token
         // performs — and the JWT injected as `Authorization: Bearer`. That is how a
@@ -891,12 +912,12 @@ configs:
         // claims the same name, which adopts that row and makes it file-owned.
         "gateways": {
           // PostgREST, over the compose network: the SERVICE NAME and the CONTAINER
-          // port, which is also how caddy addresses it. Not localhost — inside the
+          // port, which is also how Caddy addresses it. Not localhost — inside the
           // idp container `localhost:3000` is the idp ITSELF (the request loops back
           // to the origin root, where the base-path guard 307s it to /idp/...), and
           // any other localhost port is nothing at all (connection refused, surfaced
           // as `bad_gateway`). PostgREST has no host port either way; the compose
-          // network is the only route to it besides caddy.
+          // network is the only route to it besides Caddy.
           //
           // Plain http, so a bearer token minted from a caller's API key crosses the
           // network in clear. Acceptable because that network is private to this
@@ -994,7 +1015,7 @@ configs:
             // EXACT match, no wildcards. The SPA builds its redirect URI as
             // `$${window.location.origin}/oauth2_callback`, so this has to be the
             // origin the browser actually uses — which is what PUBLIC_WEB_ORIGIN is
-            // for (the caddy front door, no path, no trailing slash). Going live, set
+            // for (the Caddy front door, no path, no trailing slash). Going live, set
             // PUBLIC_WEB_ORIGIN=https://yourdomain.com in .env; add a second entry
             // here if the same deployment is reached on more than one origin.
             //

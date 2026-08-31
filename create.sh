@@ -70,7 +70,14 @@ if [ -n "$VOLUMES" ]; then
 else
   echo "== No existing volumes — creating the stack from scratch =="
 fi
-docker compose down -v
+# --remove-orphans as well: a bare `down` only removes containers for services
+# CURRENTLY in the compose file, so one left behind by a RENAMED service (the SPA
+# was `web` before it became `nginx`) survives the wipe — and then collides with
+# the new service over its `container_name:`, failing the next up with
+# "Conflict. The container name /semantius-app is already in use". up.sh passes
+# the same flag, but that one is too late: compose drops orphans AFTER creating
+# the service containers, i.e. after the conflict has already fired.
+docker compose down -v --remove-orphans
 
 # Everything past the wipe is exactly `up`, so it lives in one place.
 UP_ARGS=""

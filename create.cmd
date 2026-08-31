@@ -82,7 +82,14 @@ if defined HASVOL (
 ) else (
   echo == No existing volumes - creating the stack from scratch ==
 )
-docker compose down -v || goto :err
+REM --remove-orphans as well: a bare "down" only removes containers for services
+REM CURRENTLY in the compose file, so one left behind by a RENAMED service (the SPA
+REM was "web" before it became "nginx") survives the wipe -- and then collides with
+REM the new service over its "container_name:", failing the next up with
+REM Conflict. The container name /semantius-app is already in use. up.sh passes
+REM the same flag, but that one is too late: compose drops orphans AFTER creating
+REM the service containers, i.e. after the conflict has already fired.
+docker compose down -v --remove-orphans || goto :err
 
 REM Everything past the wipe is exactly `up`, so it lives in one place.
 set "UP_ARGS="

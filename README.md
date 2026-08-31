@@ -76,11 +76,10 @@ cp .env.example .env   # Windows: copy .env.example .env  (create does this for 
 ./create.sh            # pull the images + a FRESH database, stack up (Windows: create.cmd)
 ```
 
-Then, **once**, create the first administrator: open
-**http://localhost:3000/idp**. While the idp's user table is empty it serves a
-first-run setup page, and whoever completes it becomes the first admin — there is
-no bootstrap account and no password in the environment. Sign in to the admin SPA
-at **http://localhost:3000/** with it.
+Then open **http://localhost:3000/** — the admin SPA. It sends you to sign in,
+and while the idp's user table is empty the sign-in page *is* the first-run setup
+page: whoever completes it becomes the first administrator and lands back in the
+SPA. There is no bootstrap account and no password in the environment.
 
 - **Front door:** http://localhost:3000 — admin SPA at `/`, API at `/rest/`
   (or `/gateway/rest/` for the same API through the idp's authenticating proxy,
@@ -145,7 +144,7 @@ Set `SEMANTIUS_DB_VERSION` in `.env` to make a pin permanent (there are matching
 
 Eight services (compose project `semantius`), seven long-running + one one-shot.
 The **container** names say what each one is rather than repeating the service
-name — `postgrest` runs as `semantius-api`, `scalar` as `semantius-docs`, `web`
+name — `postgrest` runs as `semantius-api`, `scalar` as `semantius-docs`, `nginx`
 as `semantius-app`, `jwks-fetch` as `semantius-jwks`; the rest match
 (`semantius-postgres`, `-pgbouncer`, `-idp`, `-caddy`). Use the **service** name
 with `docker compose`, the **container** name with plain `docker`:
@@ -156,22 +155,31 @@ with `docker compose`, the **container** name with plain `docker`:
 | `pgbouncer` | `edoburu/pgbouncer:latest` | **6432** | transaction-pooled `semantius_authenticator` endpoint for apps that talk SQL directly ([see below](#the-pgbouncer-service--a-pooled-endpoint-for-external-apps)) |
 | `idp` | `ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION}` | — | **the bundled OIDC/OAuth issuer**, served at `/idp` — signs the bearer tokens and publishes the JWKS ([see below](#the-idp-service--the-bundled-identity-provider)). Shares `postgres` in its own `idp` schema; configured by [`idp-config/*.jsonc`](idp-config/) |
 | `jwks-fetch` | `curlimages/curl:latest` | — | **one-shot**: downloads the issuer JWKS to a file PostgREST can read (see below) |
-| `postgrest` | `postgrest/postgrest:latest` | — | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/`. Reach it through `caddy` (`/rest/`, `/gateway/rest/`) |
-| `scalar` | `scalarapi/api-reference:latest` | — | renders PostgREST's Swagger 2.0 spec as browsable docs. Reach it through `caddy` (`/api-docs/`) |
-| `web` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static admin SPA (nginx). **SPA only** — it proxies nothing; reach it through `caddy`. Runtime config is written to `config.js` at container start from its `VITE_*` env |
-| `caddy` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`idp-config/config.jsonc`](idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](Caddyfile) — edit it and `docker compose restart caddy` |
+| `postgrest` | `postgrest/postgrest:latest` | — | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/`. Reach it through `semantius` (`/rest/`, `/gateway/rest/`) |
+| `scalar` | `scalarapi/api-reference:latest` | — | renders PostgREST's Swagger 2.0 spec as browsable docs. Reach it through `semantius` (`/api-docs/`) |
+| `nginx` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static admin SPA (nginx). **SPA only** — it proxies nothing; reach it through `semantius`. Runtime config is written to `config.js` (`window.__ENV__`) at container start from its `VITE_*` env by the image's `gen-config.sh`, so one image serves every environment — but only the names on that script's canonical list are emitted, so a **new** `VITE_*` setting needs an app image that knows it |
+| `semantius` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`idp-config/config.jsonc`](idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](Caddyfile) — edit it and `docker compose restart semantius` |
 
 The registry images use `:latest` and `pull_policy: always` (re-pulled on every
 `create`); `postgres` is the locally-built image, used as-is. Pin
 `postgrest`/`scalar` to fixed tags once you're happy.
 
-> **The SPA's control plane is opt-OUT.** The `web` service sets
+> **The SPA's control plane is opt-OUT.** The `nginx` service sets
 > `VITE_CONTROL_PLANE_URL: " "` — a **single space**, and it is load-bearing.
 > Unset *or empty* leaves the image's cloud default in place, which sends the app
 > to `api.semantius.cloud` for a tenant lookup and fails to boot when self-hosted;
 > a whitespace value survives the runtime-env filter and trims to `""` in the app,
 > selecting self-hosted mode. Don't "tidy" it away — the comment in
 > `docker-compose.yml` says the same thing next to the line.
+>
+> **Same shape, second setting.** `VITE_BACKEND_TYPE: self_hosted` picks the
+> user menu, and unset *or empty* means `cloud` — the hosted account/billing
+> entries, which do not exist here. `self_hosted` renders `/idp/account` and
+> `/idp/admin`, the pages this stack really serves. Like the control-plane URL
+> it is pinned in the compose rather than exposed in `.env`: this deployment
+> *is* the self-hosted backend. (`custom` is the third value, and needs
+> `VITE_UI_CUSTOMIZER` to carry a JSON user menu; anything else is a blocking
+> config error at boot.)
 
 ## Environment variables (`.env`)
 
@@ -189,21 +197,21 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 | `IDP_DYNAMIC_ISSUER` | `false` | `idp` | Derive the issuer (and every browser-facing URL **except e-mail links**) per request from the arriving host. Setting it `true` is *your* assertion about the ingress — see [Serving more than one domain](#serving-more-than-one-domain-idp_dynamic_issuer) below. The Dokploy blueprint sets it. |
 | `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
 | `RESEND_API_KEY` | *(unset)* | `idp` | Optional. Without it the idp runs **degraded**: password reset, e-mail verification and all notifications are disabled and hidden. Fine locally (admins create users); set it for anything real. |
-| `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `web`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
-| `VITE_OAUTH_CLIENT_ID` | `public-client` | `web` | Public OAuth client id. Matches the SPA registered in [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc). |
-| `VITE_OAUTH_AUDIENCE` | `${IDP_JWT_AUDIENCE}` (`semantius://api`) | `web` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
-| `IDP_JWT_AUDIENCE` | `semantius://api` | `idp`, `web` | The audience the bundled idp registers and mints as `aud`, and the default of `VITE_OAUTH_AUDIENCE` — one var moves both sides. A **fixed URI** on purpose: an audience derived from the issuer URL goes stale the moment a domain is attached after deploy. Seeding `_settings.jwt_aud`? Seed exactly this value. |
+| `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `nginx`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
+| `VITE_OAUTH_CLIENT_ID` | `public-client` | `nginx` | Public OAuth client id. Matches the SPA registered in [`idp-config/oauth_clients.jsonc`](idp-config/oauth_clients.jsonc). |
+| `VITE_OAUTH_AUDIENCE` | `${IDP_JWT_AUDIENCE}` (`semantius://api`) | `nginx` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
+| `IDP_JWT_AUDIENCE` | `semantius://api` | `idp`, `nginx` | The audience the bundled idp registers and mints as `aud`, and the default of `VITE_OAUTH_AUDIENCE` — one var moves both sides. A **fixed URI** on purpose: an audience derived from the issuer URL goes stale the moment a domain is attached after deploy. Seeding `_settings.jwt_aud`? Seed exactly this value. |
 | `JWKS_URL` | `http://idp:3000/idp/.well-known/jwks.json` | `jwks-fetch` | Keys PostgREST validates bearer tokens against. Defaults to the bundled idp **in-network** — explicit rather than derived, because the `jwks_uri` the idp advertises carries its *public* URL, which that container can't resolve. Set it **empty** (present in `.env`, no value) to derive from `VITE_OAUTH_CONFIG`'s discovery document instead — what an external issuer wants. The compose uses `${JWKS_URL-…}`, not `${JWKS_URL:-…}`, so an empty value stays empty. |
 | `POSTGRES_PASSWORD` | **(required)** | `postgres` | `postgres` DBA login password. The stack refuses to start if unset. |
 | `POSTGRES_DB` | `semantius` | `postgres`, `postgrest` | Database created on first init and served by the API. |
 | `SEMANTIUS_AUTHENTICATOR_PASSWORD` | `devpassword` | `postgres`, `postgrest` | Password for `semantius_authenticator`, the role PostgREST logs in as. Consumed by the image's baked `20-authenticator-login.sh` **and** by `PGRST_DB_URI` — kept in sync automatically. Per-environment secret. |
 | `SEMANTIUS_DB_VERSION` | `latest` | `postgres` | Tag of the `semantius/postgres` image to run. Pin (e.g. `0.3.0-pg18`) for reproducible/server deploys; `latest` tracks your local `docker-postgres/build.sh`. |
-| `SEMANTIUS_APP_VERSION` | `latest` | `web` | Tag of the `semantius/semantius-app` admin SPA image. Re-pulled on every `create`; pin for reproducible/server deploys. |
+| `SEMANTIUS_APP_VERSION` | `latest` | `nginx` | Tag of the `semantius/semantius-app` admin SPA image. Re-pulled on every `create`; pin for reproducible/server deploys. |
 | `NWIND` | *(unset)* | `postgres` | Set to **any** non-empty value (e.g. `TRUE`) to load the optional Northwind demo module on first init. Takes effect only on a **fresh** data volume (init runs once). |
 | `POSTGRES_PORT` | `5434` | `postgres` | Host port for Postgres (5432/5433 belong to pgdocker's cli/ext stacks). |
 | `PGBOUNCER_PORT` | `6432` | `pgbouncer` | Host port for the transaction-pooled PgBouncer endpoint. |
-| `WEB_PORT` | `3000` | `caddy` | Host port of the **front door** — the only published HTTP port: `/` the SPA, `/rest/*` the API, `/api-docs/*` the docs, `/idp/*` the identity provider. PostgREST, Scalar, the idp and the SPA have no host ports of their own. |
-| `SITE_ADDRESS` | `:80` | `caddy` | The address Caddy serves inside the container. `:80` is plain HTTP — right for local dev and behind anything that terminates TLS (Dokploy/Traefik). On a **bare VPS** set your bare domain for automatic HTTPS, then publish `80:80` + `443:443` on `caddy` instead of `WEB_PORT`. That topology answers **every** Host pointed at the server, so it is **not** eligible for `IDP_DYNAMIC_ISSUER`. |
+| `WEB_PORT` | `3000` | `semantius` | Host port of the **front door** — the only published HTTP port: `/` the SPA, `/rest/*` the API, `/api-docs/*` the docs, `/idp/*` the identity provider. PostgREST, Scalar, the idp and the SPA have no host ports of their own. |
+| `SITE_ADDRESS` | `:80` | `semantius` | The address Caddy serves inside the container. `:80` is plain HTTP — right for local dev and behind anything that terminates TLS (Dokploy/Traefik). On a **bare VPS** set your bare domain for automatic HTTPS, then publish `80:80` + `443:443` on `semantius` instead of `WEB_PORT`. That topology answers **every** Host pointed at the server, so it is **not** eligible for `IDP_DYNAMIC_ISSUER`. |
 | `PUBLIC_API_URL` | `http://localhost:${WEB_PORT}/gateway/rest` | `postgrest` | The base URL the OpenAPI spec **advertises** (`PGRST_OPENAPI_SERVER_PROXY_URI`). Cannot be relative — PostgREST parses it into the spec's host/basePath — and never the in-network `postgrest` hostname, because the browser resolves it for "Test Request". It names the **gateway** route rather than the direct `/rest`, which is what lets "Test Request" work with an API key from `/idp/account/api-keys`. Going live, set the public front-door URL **including** `/gateway/rest`. |
 | `DOCS_SPEC_URL` | `/gateway/rest` (relative) | `scalar` | Where the docs page fetches the spec itself. Relative on purpose: the browser resolves it against whatever host the docs are open on, so the docs keep loading on a domain attached after deploy — while "Test Request" calls the host advertised by `PUBLIC_API_URL` until that is updated. Rarely needs setting. |
 
@@ -242,7 +250,10 @@ generates all three per deployment, so this table is about hand-managed `.env`s.
 - `IDP_CONFIG_DIR` (`/config`) and `IDP_SCHEMA_NAME` (`idp`) — pinned in the
   compose so a stray host value cannot redirect the container to another
   configuration or another schema.
-The `postgrest`, `web` and `caddy` services also set fixed operational env
+- `VITE_CONTROL_PLANE_URL` (a single space) and `VITE_BACKEND_TYPE`
+  (`self_hosted`) — the pair that puts the admin SPA in self-hosted mode, per
+  the note above. Pinned, not `.env`-driven.
+The `postgrest`, `nginx` and `semantius` services also set fixed operational env
 (`PGRST_*`, `VITE_API_BASE_URL`, `VITE_CONTROL_PLANE_URL`, …) inline; those are
 documented by comments in `docker-compose.yml` and rarely need changing.
 
@@ -301,8 +312,8 @@ issuer's startup.
 |---|---|---|
 | `pgdata` | `postgres` | the database cluster (survives stop/start; removed by `destroy`) |
 | `jwks` | `jwks-fetch` (rw), `postgrest` (ro) | the fetched `jwks.json` |
-| `caddy_data` | `caddy` | ACME account + issued certificates (only used when `SITE_ADDRESS` is a real domain) |
-| `caddy_config` | `caddy` | Caddy's autosaved config |
+| `caddy_data` | `semantius` | ACME account + issued certificates (only used when `SITE_ADDRESS` is a real domain) |
+| `caddy_config` | `semantius` | Caddy's autosaved config |
 
 ## Auth model (how a request flows)
 
@@ -693,8 +704,9 @@ transform:
 | File | What it is |
 |---|---|
 | `dokploy/docker-compose.yml` | the stack, portless, with the Caddyfile and the idp config embedded |
-| `dokploy/template.toml` | copied from `variants/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `caddy`:80 mapping |
+| `dokploy/template.toml` | copied from `variants/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `semantius`:80 mapping |
 | `dokploy/meta.json` | copied from `variants/dokploy/` — gallery card: id, name, description, logo, links, tags |
+| `dokploy/import.base64.txt` | the compose **and** `template.toml` as one base64 string, to paste into Dokploy's **Import** box — the only path in a stock instance that runs `template.toml` without publishing a gallery |
 
 The generated env wires the **bundled issuer** to the deployment
 (`IDP_BASE_URL=https://${main_domain}/idp`, a per-deployment `IDP_SECRET`), so a
@@ -716,8 +728,17 @@ database.
   copy the folder to `blueprints/semantius/` (add `logo.svg` — the build prints a
   reminder while it is missing from the repo root), then point your instance at
   the fork as a custom templates repo;
-- or, in any instance: **Create Service → Advanced → Import → Base64** of these
-  files.
+- or, in any instance: **Create Service → Advanced → Import**, and paste the
+  contents of [`dokploy/import.base64.txt`](dokploy/import.base64.txt). Dokploy
+  shows you the resolved compose, env, mounts and domains before you hit Deploy.
+
+> **`template.toml` runs on the template paths only.** A compose service whose
+> source is **Raw** (pasted YAML) or **Git** ignores it — Dokploy reads just the
+> compose file at the configured path, so `${domain}`, `${password:32}` and
+> `${password:64}` are never expanded and nothing writes the deployment's `.env`.
+> On those paths you fill the **Environment** tab yourself; `POSTGRES_PASSWORD`
+> and `IDP_SECRET` have no defaults in the blueprint and the deploy fails at
+> interpolation without them.
 
 The target server needs **docker compose ≥ 2.23.1** (inline `configs.content`).
 

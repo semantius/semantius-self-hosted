@@ -17,6 +17,8 @@
  *   <variant>/docker-compose.yml  deployment variant of the stack
  *   <variant>/template.toml       copied from variants/<variant>/
  *   <variant>/meta.json           copied from variants/<variant>/
+ *   <variant>/import.base64.txt   the two above as ONE base64 string, for
+ *                                 Dokploy's Create Service > Advanced > Import
  *
  * The compose transform is variant-agnostic, per the Dokploy blueprint rules
  * (github.com/Dokploy/templates):
@@ -64,29 +66,45 @@ const variantSrc = (name) => new URL(name, VARIANT_DIR);
 const out = (name) => new URL(name, OUT_DIR);
 
 // ---------------------------------------------------------------------------
-// The generated compose header. Replaces the local-dev header, which documents
-// host ports and the bind-mounted config files — neither of which exists here.
+// The generated compose header. Written for the person who READS IT WHERE IT
+// ENDS UP — a deployment platform's compose editor — and not for a maintainer of
+// this repository. They have no `../docker-compose.yml` to go back to, no build
+// script to re-run, and no use for the list of transforms that produced this
+// file; what they need is what the stack is, what it requires of them, and where
+// the source lives. The rationale for each transform stays in this script's own
+// docblock, where the person who needs it is standing.
 // ---------------------------------------------------------------------------
-const GENERATED_HEADER = ` GENERATED FILE — DO NOT EDIT.
- Built from ../docker-compose.yml + ../Caddyfile + ../idp-config/*.jsonc +
- ../variants/${VARIANT}/ by \`./dokploy-build.sh ${VARIANT}\`
- (scripts/dokploy-build.mjs). Change those, then regenerate.
+const GENERATED_HEADER = ` The Semantius stack: PostgreSQL with the pg_semantius extension, a PostgREST
+ HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth identity
+ provider — all behind one Caddy front door.
 
- The ${VARIANT} blueprint variant of the semantius stack. Same services as the
- local-dev compose, minus everything a one-click deployment must not carry:
- host \`ports:\` (the platform's proxy routes to the \`caddy\` service by name —
- see template.toml's [[config.domains]]), \`container_name:\` (would collide
- across deployments) and bind mounts (the Caddyfile and the identity provider's
- configuration are embedded in the top-level \`configs:\` block below, so
- \`mounts = []\` in the template).
+ ROUTING. Attach your domain to the \`semantius\` service on port 80 — it is the
+ only way in, and it fans out internally:
+   /              the admin SPA          /idp/*         the identity provider
+   /rest/*        the API                /.well-known/* its discovery documents
+   /api-docs/*    the API docs           /gateway/*     the API, via the idp's
+                                                        authenticating proxy
 
- One further difference, forced rather than chosen: a service carrying an inline
- \`content:\` config cannot also be \`read_only\`, because compose delivers such a
- config by writing it into the container filesystem. \`read_only\` is therefore
- dropped from those services here — cap_drop, no-new-privileges and the tmpfs
- are not.
+ REQUIRED ENVIRONMENT — everything else has a working default:
+   POSTGRES_PASSWORD  the database superuser
+   IDP_SECRET         signs the identity provider's sessions and encrypts its
+                      JWT signing keys — >= 32 random bytes, set BEFORE first
+                      boot (changing it later logs everyone out and makes the
+                      stored signing keys undecryptable)
+ Both must be URL-safe (no \`@ : / ? #\` or spaces) — they are spliced into
+ connection strings. Importing this as a template generates both for you.
 
- Requires docker compose >= 2.23.1 on the target server (inline configs.content).`;
+ FIRST RUN. No account exists yet, and there is nothing special to visit: open
+ the deployment and the app's sign-in bounce lands on the setup page, which
+ stands in for the login page until somebody completes it. Whoever does becomes
+ the first administrator. Set IDP_BASE_URL to your real domain (plus /idp) once
+ you have one; it is the base of every e-mail link.
+
+ REQUIRES docker compose >= 2.23.1 on the target server (inline configs.content).
+
+ GENERATED — edits here apply to this deployment only and are lost on the next
+ import. The source is github.com/semantius/semantius-self-hosted; this file is
+ built from it by scripts/dokploy-build.mjs.`;
 
 // ---------------------------------------------------------------------------
 // Build
@@ -158,7 +176,7 @@ if (!idpConfigFiles.length) fail("no *.jsonc files in idp-config/");
 
 const EMBED_GROUPS = [
   {
-    service: "caddy",
+    service: "semantius",
     // The bind mount this replaces.
     isMount: (v) => v.includes("/etc/caddy/Caddyfile"),
     files: [{ name: "caddyfile", source: "Caddyfile", target: "/etc/caddy/Caddyfile" }],
@@ -405,6 +423,28 @@ writeText(out("docker-compose.yml"), outCompose);
 writeText(out("template.toml"), TEMPLATE_TOML);
 writeText(out("meta.json"), metaJsonText.endsWith("\n") ? metaJsonText : `${metaJsonText}\n`);
 
+// --- the paste-in-the-UI bundle --------------------------------------------
+// Dokploy's Compose service has a Create Service > Advanced > Import box that
+// takes ONE base64 string, and that is the only path in a stock instance where
+// template.toml actually RUNS: a raw-pasted compose ignores it, and so does a
+// Git source, because Dokploy reads only the compose file at the configured
+// path. Without this bundle the blueprint's generated secrets and its
+// ${domain} are unreachable unless you publish the folder to a templates
+// gallery.
+//
+// The payload is EXACTLY what Dokploy's `compose.processTemplate` procedure
+// decodes (apps/dokploy/server/api/routers/compose.ts): base64 of a JSON
+// object with `compose` (the compose YAML, verbatim) and `config`
+// (template.toml as a TOML STRING, parsed server-side). Only `variables`,
+// `config.env`, `config.domains` and `config.mounts` are read from it — the
+// gallery metadata lives in meta.json and is not part of this bundle.
+const importBundle = Buffer.from(
+  JSON.stringify({ compose: outCompose, config: TEMPLATE_TOML }),
+  "utf8",
+).toString("base64");
+writeText(out("import.base64.txt"), `${importBundle}
+`);
+
 // The gallery card wants a logo next to meta.json. The variant's own logo wins;
 // the repo root's is the shared fallback. Missing entirely is not fatal — the
 // blueprint still deploys, it just renders without a logo.
@@ -427,8 +467,10 @@ console.log(
 console.log(`  docker-compose.yml    embeds ${embeddedNames.join(", ")}`);
 console.log(`  template.toml         from variants/${VARIANT}/`);
 console.log(`  meta.json             from variants/${VARIANT}/`);
+console.log(`  import.base64.txt     paste-ready bundle (compose + template.toml), ${importBundle.length} chars`);
 console.log(logoNote);
 console.log("");
 console.log("Publish it as a Dokploy one-click template either way:");
 console.log(`  - fork github.com/Dokploy/templates and copy this folder to blueprints/${BLUEPRINT_ID}/`);
-console.log("  - or in any instance: Create Service > Advanced > Import > Base64 of these files");
+console.log(`  - or in any instance: Create Service > Advanced > Import, pasting ${VARIANT}/import.base64.txt`);
+console.log("    (a Raw or Git compose source ignores template.toml — fill the Environment tab there instead)");

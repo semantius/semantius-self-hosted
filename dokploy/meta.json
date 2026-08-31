@@ -2,7 +2,7 @@
   "id": "semantius",
   "name": "Semantius",
   "version": "1.0.0",
-  "description": "Semantic data-model platform: PostgreSQL 18 with the pg_semantius extension, a PostgREST HTTP API with OpenAPI docs, and the admin SPA — behind one Caddy front door. Auth is self-contained: a bundled OIDC/OAuth identity provider at /idp issues the bearer tokens and publishes the JWKS PostgREST validates them against, so the first visit to /idp creates the first administrator and nothing external has to be registered. Domains attached after deploy work immediately — discovery, sign-in, the SPA and the API all follow the request host; only e-mail links stay on the deploy-time domain until IDP_BASE_URL is updated once. Point VITE_OAUTH_CONFIG, VITE_OAUTH_CLIENT_ID and JWKS_URL elsewhere to use your own issuer instead.",
+  "description": "Semantic data-model platform: PostgreSQL 18 with the pg_semantius extension, a PostgREST HTTP API with OpenAPI docs, and the admin SPA — behind one Caddy front door. Auth is self-contained: a bundled OIDC/OAuth identity provider at /idp issues the bearer tokens and publishes the JWKS PostgREST validates them against, so the first visit creates the first administrator — the app's sign-in lands on a setup page until somebody completes it — and nothing external has to be registered. Domains attached after deploy work immediately — discovery, sign-in, the SPA and the API all follow the request host; only e-mail links stay on the deploy-time domain until IDP_BASE_URL is updated once. Point VITE_OAUTH_CONFIG, VITE_OAUTH_CLIENT_ID and JWKS_URL elsewhere to use your own issuer instead.",
   "logo": "logo.svg",
   "links": {
     "github": "https://github.com/semantius/semantius-self-hosted",

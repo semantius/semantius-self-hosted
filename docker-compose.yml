@@ -17,19 +17,22 @@ name: semantius
 # (semantius-ext, 5433) stacks without colliding. Each container is named for what
 # it IS rather than for its compose service — semantius-postgres / -pgbouncer /
 # -idp / -jwks / -api / -docs / -app / -caddy — which is what `docker ps` and
-# `docker logs` want. (`-app` and not `-web`: it runs the semantius-app image, and
-# the shorter name is taken on some dev machines by the semantius-web repo's own
-# stack.) Bring it up with create.sh / .cmd (fresh database) or up.sh / .cmd
+# `docker logs` want. Two names therefore differ from their service on purpose:
+# the SPA is the `nginx` service (what it runs) in the `-app` container (what it
+# serves, and `-app` rather than `-web` because the shorter name is taken on some
+# dev machines by the semantius-web repo's own stack); the front door is the
+# `semantius` service — the name a deployment platform shows when you attach a
+# domain to this stack — in the `-caddy` container. Bring it up with create.sh / .cmd (fresh database) or up.sh / .cmd
 # (recreates the containers, keeps the data).
 #
-# FRONT DOOR: the `caddy` service (host port WEB_PORT, default 3000) is the single
-# public entrypoint — `/` serves the admin SPA (`web`), `/rest/*` proxies to
+# FRONT DOOR: the `semantius` service (host port WEB_PORT, default 3000) is the
+# single public entrypoint — `/` serves the admin SPA (`nginx`), `/rest/*` proxies to
 # PostgREST and `/api-docs/*` to Scalar, both with the prefix stripped, and
 # `/idp/*` + `/.well-known/*` reach the identity provider (prefix INTACT there —
 # it is part of the issuer URL). The routes live in the sibling ./Caddyfile,
-# bind-mounted as a REGULAR file: edit it and `docker compose restart caddy` to
+# bind-mounted as a REGULAR file: edit it and `docker compose restart semantius` to
 # apply. Only the DATA TIER keeps host ports here (postgres, pgbouncer — real
-# clients, no HTTP route caddy could serve); every HTTP service is reached
+# clients, no HTTP route the front door could serve); every HTTP service is reached
 # through the front door.
 #
 # THIS file is the local-dev stack. The DEPLOYMENT variant in ./dokploy/ is
@@ -130,7 +133,7 @@ services:
   # owns its whole auth story out of the box — no external IdP, no public throwaway
   # test issuer.
   #
-  # MOUNTED AT /idp on the caddy front door (see ../Caddyfile), and the prefix is
+  # MOUNTED AT /idp on the Caddy front door (see ../Caddyfile), and the prefix is
   # NOT stripped: `server.baseUrl` in idp-config/config.jsonc carries it, and every
   # link, cookie Path, e-mail URL and redirect the idp emits derives from that one
   # value. Its discovery documents are ALSO served from the ORIGIN ROOT
@@ -152,9 +155,11 @@ services:
   # documentation. The `${env:...}` placeholders inside those files resolve from
   # the environment below.
   #
-  # FIRST RUN: no bootstrap account, and no password in the environment. While the
-  # user table is empty the idp serves a setup page at /idp — whoever completes it
-  # becomes the first administrator.
+  # FIRST RUN: no bootstrap account, and no password in the environment. Nothing
+  # to visit here either — open the SPA at the front door and its sign-in bounce
+  # lands on the setup page for as long as the user table is empty (the idp
+  # redirects /idp/login there), and whoever completes it becomes the first
+  # administrator.
   idp:
     image: ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION:-latest}
     # `always` keeps a released tag honest — it is re-pulled on every create/up.
@@ -247,7 +252,7 @@ services:
       # after every change to keep the two in sync.
       - ./idp-config:/config:ro
     # No host port: every URL the idp emits carries the front door's origin +
-    # /idp, so it is only ever correct to reach it through caddy on WEB_PORT.
+    # /idp, so it is only ever correct to reach it through the front door on WEB_PORT.
     # Nothing writes to the image. The one writable path it needs holds scratch,
     # so a tmpfs rather than a volume — it should not survive a restart.
     read_only: true
@@ -395,7 +400,7 @@ services:
       # http://0.0.0.0:3000/... which the browser rejects (ERR_ADDRESS_INVALID).
       # The browser resolves this URL, so it must be browser-reachable — NOT the
       # in-network `postgrest` hostname. The default is this stack's OWN front door
-      # (caddy on WEB_PORT), and specifically its /gateway/rest route — the idp's
+      # (the front door on WEB_PORT), and specifically its /gateway/rest route — the idp's
       # authenticating proxy — NOT the direct /rest one. That is what makes the
       # docs usable with an API key: the gateway exchanges an `x-api-key` for a
       # bearer token, so "Test Request" needs a key rather than a hand-minted JWT.
@@ -419,7 +424,7 @@ services:
   # --- Scalar API reference (OpenAPI docs) -----------------------------------
   # Renders PostgREST's Swagger 2.0 spec. The `url` is fetched by the BROWSER
   # from the /api-docs/ page, so a RELATIVE default is exactly right: it resolves
-  # against whatever origin the docs are open on, which caddy routes to the
+  # against whatever origin the docs are open on, which Caddy routes to the
   # gateway on every host it fronts — a domain attached after deploy needs no
   # edit for the docs to load. This is a DIFFERENT setting from
   # PGRST_OPENAPI_SERVER_PROXY_URI above, which cannot be relative (PostgREST
@@ -451,12 +456,12 @@ services:
 
   # --- Admin SPA -------------------------------------------------------------
   # Static single-page admin app (nginx, container port 80). SPA ONLY — it does no
-  # proxying of its own; the `caddy` front door below routes /rest/* and /api-docs/*
+  # proxying of its own; the `semantius` front door below routes /rest/* and /api-docs/*
   # and falls through to here for everything else. Deliberately NOT published on a
-  # host port — reach it through caddy on WEB_PORT. Runtime config is generated
+  # host port — reach it through the front door on WEB_PORT. Runtime config is generated
   # into config.js at container start from the VITE_* env below (the image's
   # gen-config.sh), so one image serves every environment.
-  web:
+  nginx:
     image: ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION:-latest}
     # Re-pull :latest on every `up` (create). Without this, compose only
     # pulls when the image is missing locally, so create would keep running a stale
@@ -472,7 +477,7 @@ services:
     restart: unless-stopped
     environment:
       # Same-origin API base: the browser calls http://<host>:${WEB_PORT}/rest/...
-      # and caddy proxies /rest/* -> postgrest:3000 with the prefix stripped, so no
+      # and Caddy proxies /rest/* -> postgrest:3000 with the prefix stripped, so no
       # CORS and no need to publish PostgREST's port. Doesn't change going live.
       #
       # The DIRECT route, not /gateway/rest: the SPA holds a real OAuth access
@@ -483,7 +488,7 @@ services:
       # OIDC discovery URL + client id — the SPA resolves the OAuth endpoints from
       # this at boot. Both default to the BUNDLED idp. The discovery default is
       # RELATIVE on purpose: the SPA fetch()es it, so a relative URL resolves
-      # against window.location.origin — and caddy serves the document from the
+      # against window.location.origin — and Caddy serves the document from the
       # origin root on EVERY host it fronts, so a domain attached after deploy
       # discovers the issuer with no env edit. Replacing the issuer, point
       # VITE_OAUTH_CONFIG at yours — ABSOLUTE, because the same variable also
@@ -516,6 +521,14 @@ services:
       # the app -> true self-hosted mode (OAuth endpoints from VITE_OAUTH_CONFIG
       # discovery, the API from VITE_API_BASE_URL).
       VITE_CONTROL_PLANE_URL: " "
+      # Which built-in user menu the SPA renders: cloud | self_hosted | custom.
+      # UNSET OR EMPTY MEANS `cloud`, which shows the hosted account/billing
+      # entries that do not exist here — so this stack pins `self_hosted`, the
+      # same reason VITE_CONTROL_PLANE_URL above is pinned. Not .env-driven:
+      # this deployment IS the self-hosted backend. `custom` is the escape
+      # hatch and needs VITE_UI_CUSTOMIZER (a JSON user menu) set alongside it;
+      # any other value is a hard config error and the SPA refuses to boot.
+      VITE_BACKEND_TYPE: self_hosted
       # Ignore the image's baked demo placeholders so a missing var fails loudly
       # instead of silently using .env.example defaults (e.g. your-postgrest-api.com).
       ENV_FILE: /dev/null
@@ -528,7 +541,7 @@ services:
 
   # --- Caddy front door ------------------------------------------------------
   # The single public entrypoint. Routes (see the sibling ./Caddyfile):
-  #   /              -> web:80          (the SPA)
+  #   /              -> nginx:80        (the SPA)
   #   /rest/*        -> postgrest:3000  (prefix stripped by handle_path)
   #   /gateway/*     -> idp:3000        (the idp's authenticating proxy; /gateway/rest
   #                                      fronts that same PostgREST)
@@ -538,7 +551,7 @@ services:
   #                                      has to live at the origin root)
   # No depends_on: Caddy re-resolves upstream DNS per request, so an upstream that
   # hasn't started yet is a brief 502 that self-heals — no start-order coupling.
-  caddy:
+  semantius:
     image: caddy:2-alpine
     pull_policy: always
     container_name: semantius-caddy
@@ -551,7 +564,7 @@ services:
     ports:
       - "${WEB_PORT:-3000}:80"
     volumes:
-      # Regular file — edit it and `docker compose restart caddy` to apply. The
+      # Regular file — edit it and `docker compose restart semantius` to apply. The
       # dokploy build embeds it into the generated compose instead (no bind mounts
       # there), so regenerate after every change to keep the two in sync.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

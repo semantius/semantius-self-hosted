@@ -80,7 +80,6 @@ docker compose ps
 echo.
 echo Ready (Semantius stack). Default ports (see .env):
 echo   Admin: http://localhost:3000/   (SPA; API at /rest/, docs at /api-docs/)
-echo   IdP  : http://localhost:3000/idp   (first run: create the first administrator)
 echo   DBA : postgresql://postgres:^<POSTGRES_PASSWORD^>@localhost:5434/semantius
 
 REM The idp warns about its own shipped defaults, but
