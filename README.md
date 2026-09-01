@@ -67,6 +67,23 @@ flowchart LR
     rest -->|"SCRAM as semantius_authenticator<br/>SET ROLE authenticated or anon, per request"| pg
 ```
 
+**What the boxes are.** Eight containers, and only three of them are ours — the
+rest are stock upstream images, unmodified:
+
+| In the diagram | Image | Upstream |
+|---|---|---|
+| Caddy | `caddy:2-alpine` | [caddyserver.com](https://caddyserver.com) · [caddyserver/caddy](https://github.com/caddyserver/caddy) |
+| Frontend App | `ghcr.io/semantius/semantius-app` | the Semantius admin SPA, a static build served by [nginx](https://nginx.org) — published by the Semantius project |
+| semantius-idp | `ghcr.io/semantius/semantius-idp` | [semantius/semantius-idp](https://github.com/semantius/semantius-idp) |
+| Scalar docs | `scalarapi/api-reference` | [scalar.com](https://scalar.com) · [scalar/scalar](https://github.com/scalar/scalar) |
+| PostgREST | `postgrest/postgrest` | [postgrest.org](https://postgrest.org) · [PostgREST/postgrest](https://github.com/PostgREST/postgrest) |
+| PgBouncer | `edoburu/pgbouncer` | [pgbouncer.org](https://www.pgbouncer.org) · image: [edoburu/docker-pgbouncer](https://github.com/edoburu/docker-pgbouncer) |
+| Postgres 18 + pg_semantius | `ghcr.io/semantius/postgres` | [postgresql.org](https://www.postgresql.org) + the extension, built from [`docker-postgres/`](https://github.com/semantius/semantius/tree/main/docker-postgres) |
+| *(not drawn — one-shot, exits)* | `curlimages/curl` | [curl.se](https://curl.se) · image: [curl/curl-container](https://github.com/curl/curl-container) |
+
+Service names, container names, host ports and what each one actually does:
+[Services & images](#services--images) below.
+
 ## Quick start
 
 ```bash
