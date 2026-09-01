@@ -48,9 +48,12 @@ if [ "$PULL" = 0 ] && [ -n "$DB_VERSION" ]; then
   exit 1
 fi
 
+# Not a plain copy: setup-env.sh generates a unique IDP_SECRET and unique
+# database passwords into the new .env, so a first run is never left holding the
+# dev secrets .env.example ships. All three have to be right BEFORE first boot
+# — see the header of setup-env.sh. It is a no-op when .env already exists.
 if [ ! -f .env ]; then
-  cp .env.example .env
-  echo "Created .env from .env.example — edit passwords/ports if you want."
+  ./setup-env.sh
 fi
 
 # Only prompt when there is actually data to lose. The compose project name is

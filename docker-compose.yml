@@ -57,8 +57,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-semantius}
       # Read by the image's baked 20-authenticator-login.sh AND by PostgREST below
-      # (PGRST_DB_URI) — keep the two in sync.
-      SEMANTIUS_AUTHENTICATOR_PASSWORD: ${SEMANTIUS_AUTHENTICATOR_PASSWORD:-devpassword}
+      # (PGRST_DB_URI) — keep the two in sync. No default, like the other two
+      # secrets: a fallback here would let a deployment that simply FORGOT this
+      # variable boot on a published password instead of refusing to start.
+      SEMANTIUS_AUTHENTICATOR_PASSWORD: ${SEMANTIUS_AUTHENTICATOR_PASSWORD:?set SEMANTIUS_AUTHENTICATOR_PASSWORD in .env (./setup-env.sh generates one)}
       # Set to any value (e.g. TRUE) to load the optional Northwind demo module on
       # first init (the image's baked 40-nwind.sh). Leave unset for an empty DB.
       # Only takes effect on a FRESH data volume — init scripts run once.
@@ -111,7 +113,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URLS: "postgres://semantius_authenticator:${SEMANTIUS_AUTHENTICATOR_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-semantius},postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-semantius}"
+      DATABASE_URLS: "postgres://semantius_authenticator:${SEMANTIUS_AUTHENTICATOR_PASSWORD:?set SEMANTIUS_AUTHENTICATOR_PASSWORD in .env (./setup-env.sh generates one)}@postgres:5432/${POSTGRES_DB:-semantius},postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-semantius}"
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "200"
@@ -373,7 +375,7 @@ services:
     environment:
       # Connect as the authenticator; PostgREST SET ROLEs into authenticated/anon.
       # Password must match SEMANTIUS_AUTHENTICATOR_PASSWORD above.
-      PGRST_DB_URI: "postgres://semantius_authenticator:${SEMANTIUS_AUTHENTICATOR_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-semantius}"
+      PGRST_DB_URI: "postgres://semantius_authenticator:${SEMANTIUS_AUTHENTICATOR_PASSWORD:?set SEMANTIUS_AUTHENTICATOR_PASSWORD in .env (./setup-env.sh generates one)}@postgres:5432/${POSTGRES_DB:-semantius}"
       PGRST_DB_SCHEMAS: "public"
       PGRST_DB_ANON_ROLE: "anon"
       # JWKS from a FILE (PostgREST can't take a URL). @-prefix = read from file.

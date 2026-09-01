@@ -50,9 +50,12 @@ if "%PULL%"=="0" if defined DB_VERSION (
   exit /b 1
 )
 
+REM Not a plain copy: setup-env.cmd generates a unique IDP_SECRET and unique
+REM database passwords into the new .env, so a first run is never left holding
+REM the dev secrets .env.example ships. All three have to be right BEFORE first
+REM boot -- see the header of setup-env.cmd.
 if not exist ".env" (
-  copy ".env.example" ".env" >nul
-  echo Created .env from .env.example - edit passwords/ports if you want.
+  call "%~dp0setup-env.cmd" || goto :err
 )
 
 if "%ASSUME_YES%"=="1" set "FORCE=1"
