@@ -539,6 +539,16 @@ Four settings there are load-bearing and worth knowing:
   (that file is the per-user catalog, emitted as the `roles` array).
 - **`server.trustProxy: true`** — the idp always sits behind this stack's Caddy,
   which sets `X-Forwarded-*` by default.
+  The other half is `TRUSTED_PROXIES`, read by the [`Caddyfile`](Caddyfile)'s
+  global `trusted_proxies` block: the CIDRs whose forwarded headers Caddy
+  believes. Unset means loopback only, which is nobody — right when Caddy is
+  the edge. The Dokploy template sets `172.16.0.0/12` (Docker's address pools)
+  so that Traefik, which sits in front there, is trusted and the real client
+  address reaches the idp; without it every user shared one rate-limit bucket
+  and the audit trail named the proxy. Trust is exactly as wide as that list —
+  a trusted caller can forge the client address — so tighten it to
+  `dokploy-network`'s subnet (`docker network inspect dokploy-network`) once
+  you know it.
 - **`admin.database: "read-only"`** — turns on `/idp/admin/database`, a schema
   explorer and SQL console over this stack's Postgres (the whole cluster, not just
   the `idp` schema — this stack exposes no `psql`). Every statement runs in a

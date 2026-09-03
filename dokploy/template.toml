@@ -51,6 +51,13 @@ env = [
   # only configured hosts are forwarded, the set of hosts is closed, and
   # nothing reaches the containers around it.
   "IDP_DYNAMIC_ISSUER=true",
+  # Traefik sits in front of this stack's Caddy, and Caddy believes forwarded
+  # headers only from TRUSTED_PROXIES. Docker's default address pools cover
+  # every network Dokploy creates, so Traefik is trusted and the idp's
+  # per-user rate limits see real client addresses. Tighten it to
+  # dokploy-network's own subnet (`docker network inspect dokploy-network`)
+  # so that only containers on Traefik's network are trusted.
+  "TRUSTED_PROXIES=172.16.0.0/12",
   # The SPA's redirect URIs, templated on the request host. {host} is the
   # IDP's per-request template — expanded by the idp during authorization, NOT
   # by Dokploy (Dokploy substitutes ${...}; the braces without a dollar pass

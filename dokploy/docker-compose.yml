@@ -543,6 +543,12 @@ services:
       # Set a bare domain in .env for Caddy auto-HTTPS on a bare VPS (then publish
       # 80:80 + 443:443 below instead of WEB_PORT).
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      # The CIDRs whose X-Forwarded-* headers Caddy believes -- the proxy IN
+      # FRONT of it, and nothing else (see the Caddyfile's global block). The
+      # default trusts only loopback, i.e. nobody, which is right when Caddy is
+      # the edge. The Dokploy template sets Docker's address pools so Traefik
+      # is trusted and per-user throttling works there.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
     volumes:
       # Certificate/ACME store + autosaved config — only meaningful when
       # SITE_ADDRESS is a real domain (auto-HTTPS); harmless otherwise.
@@ -570,6 +576,30 @@ configs:
       # Front door for the semantius-rest stack. SITE_ADDRESS comes from the compose
       # (default ":80" — plain HTTP; TLS terminated by Dokploy/Traefik or use a bare
       # domain for Caddy auto-HTTPS on a bare VPS, then publish 80/443).
+      # Trust the X-Forwarded-* headers of whatever sits IN FRONT of this Caddy --
+      # and of nothing else, because whatever is trusted can forge the client
+      # address (rate-limit evasion, a false address in the idp's audit trail) and
+      # the forwarded host.
+      #
+      # Caddy ignores incoming X-Forwarded-* from a caller it does not trust and
+      # writes the caller's own address instead. Alone at the edge (the plain stack)
+      # that caller IS the browser and everything is right, so the default here
+      # trusts only the container's own loopback -- which nothing external can
+      # arrive from, i.e. nobody. Behind Dokploy's Traefik the caller is Traefik, and
+      # without trust every request reached the idp with Traefik's address: one
+      # rate-limit bucket shared by every user. The Dokploy template therefore sets
+      # TRUSTED_PROXIES=172.16.0.0/12 (Docker's default address pools, where Traefik
+      # lives); tighten it to dokploy-network's own subnet once you know it --
+      # `docker network inspect dokploy-network` -- so that only containers on
+      # Traefik's network are trusted. With it, X-Forwarded-For arrives at the idp
+      # as "client, traefik", and the idp's `server.trustProxy: true` takes the
+      # leftmost -- the client.
+      {
+      	servers {
+      		trusted_proxies static {$$TRUSTED_PROXIES:127.0.0.1/32}
+      	}
+      }
+
       {$$SITE_ADDRESS::80} {
       	encode zstd gzip
 

@@ -563,6 +563,12 @@ services:
       # Set a bare domain in .env for Caddy auto-HTTPS on a bare VPS (then publish
       # 80:80 + 443:443 below instead of WEB_PORT).
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      # The CIDRs whose X-Forwarded-* headers Caddy believes -- the proxy IN
+      # FRONT of it, and nothing else (see the Caddyfile's global block). The
+      # default trusts only loopback, i.e. nobody, which is right when Caddy is
+      # the edge. The Dokploy template sets Docker's address pools so Traefik
+      # is trusted and per-user throttling works there.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
     ports:
       - "${WEB_PORT:-3000}:80"
     volumes:
