@@ -60,6 +60,42 @@
 
       // Needs at least one postLogoutRedirectUris entry, above.
       "enableEndSession": true
+    },
+
+    {
+      // The `semantius-cli` command-line client. Public, PKCE S256 required —
+      // a CLI on the user's machine cannot keep a secret.
+      //
+      // `native` rather than `spa`: that is the type for an application that
+      // catches the authorization code on a loopback listener it starts itself
+      // (RFC 8252), which is what the three redirect URIs below are.
+      "clientId": "semantius-cli",
+      "name": "Semantius CLI",
+      "type": "native",
+
+      // EXACT match, no wildcards — with one carve-out that applies here:
+      // for a loopback IP (127.0.0.0/8, [::1]; NOT the name `localhost`) the
+      // idp compares scheme, host, path and query and ignores the PORT, per
+      // RFC 8252 §7.3. So the CLI may bind any port and still match, and the
+      // three entries are the three it actually tries, in order, written out
+      // so the registration reads as what the CLI does rather than relying on
+      // the carve-out.
+      "redirectUris": [
+        "http://127.0.0.1:53682/callback",
+        "http://127.0.0.1:53683/callback",
+        "http://127.0.0.1:53684/callback"
+      ],
+
+      // Same set as the SPA. `offline_access` is what gets the CLI a refresh
+      // token, so a signed-in terminal keeps working past the 15-minute
+      // access-token TTL without reopening a browser.
+      "scopes": ["openid", "profile", "email", "offline_access"],
+
+      // No browser to send anywhere after an RP-initiated logout, so no
+      // postLogoutRedirectUris — and `enableEndSession` defaults to true and
+      // refuses to start without one, hence the explicit false. The CLI logs
+      // out by discarding its own tokens.
+      "enableEndSession": false
     }
   ]
 }

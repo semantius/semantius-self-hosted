@@ -625,6 +625,12 @@ its one URI as `${PUBLIC_WEB_ORIGIN}/oauth2_callback`, which is what the admin a
 actually requests (`${window.location.origin}/oauth2_callback`). A mismatch shows
 up as an error page on the idp naming the offending URI.
 
+Two clients ship in the file: `public-client` (the admin SPA above) and
+`semantius-cli` — `type: "native"`, public, PKCE, catching its code on
+`http://127.0.0.1:5368{2,3,4}/callback`. Loopback IPs get RFC 8252 §7.3's
+port carve-out, so a CLI binding any other 127.0.0.1 port still matches;
+`localhost` does not, and is compared whole.
+
 ### Minting a token without a browser
 
 For scripted access to the bundled issuer, use a per-user **API key** — the
