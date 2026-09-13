@@ -919,6 +919,26 @@ configs:
           "refreshTokenMaxLifetime": "90d",
           // A client in oauth_clients.jsonc may only reference scopes declared here.
           "scopes": ["openid", "profile", "email", "offline_access"],
+          // RFC 9728 protected-resource metadata, served at
+          // /.well-known/oauth-protected-resource (idp FR-OIDC-18). This is the FIRST
+          // hop of the discovery walk `semantius login --host <host>` and every MCP
+          // client make: read this document, follow authorization_servers to the idp,
+          // then read its RFC 8414 metadata. Without the key the path 404s and the
+          // walk stops there (HOST_RESOLUTION_FAILED), although the idp itself is
+          // working perfectly.
+          //
+          // A PATH, not a URL: the published `resource` is this origin plus the path,
+          // so it tracks whatever host the request arrived on and stays consistent
+          // with the issuer named beside it — the pair a client compares
+          // byte-for-byte. `/rest` is PostgREST, the same upstream `handle_path
+          // /rest/*` proxies in the Caddyfile.
+          //
+          // `scopes` is left out (so `[]`). A client APPENDS scopes_supported to what
+          // it already requests and sends the result to /oauth2/authorize, where an
+          // unknown scope fails the login, so only add one that is in `scopes` above
+          // — the idp refuses to start otherwise.
+          "protectedResources": [{ "path": "/rest" }],
+
           // false: a client removed from oauth_clients.jsonc is disabled and its tokens
           // revoked. true deletes its rows instead.
           "reconcile": { "prune": false }
@@ -1105,6 +1125,16 @@ configs:
             // token, so a signed-in terminal keeps working past the 15-minute
             // access-token TTL without reopening a browser.
             "scopes": ["openid", "profile", "email", "offline_access"],
+
+            // A file-declared client defaults to `skipConsent: true` — an operator
+            // wrote the entry down, so asking the user to approve an application
+            // their own organization registered is a click that teaches them to
+            // click. This one is explicit the other way. The CLI runs on the user's
+            // own machine and asks for `offline_access`: a refresh token that keeps
+            // a terminal signed in for 30 days, long past the browser window that
+            // granted it. The consent screen is the one place that is said out loud,
+            // and it names the scopes, so the click is a real question here.
+            "skipConsent": false,
 
             // No browser to send anywhere after an RP-initiated logout, so no
             // postLogoutRedirectUris — and `enableEndSession` defaults to true and

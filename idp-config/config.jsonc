@@ -198,6 +198,26 @@
     "refreshTokenMaxLifetime": "90d",
     // A client in oauth_clients.jsonc may only reference scopes declared here.
     "scopes": ["openid", "profile", "email", "offline_access"],
+    // RFC 9728 protected-resource metadata, served at
+    // /.well-known/oauth-protected-resource (idp FR-OIDC-18). This is the FIRST
+    // hop of the discovery walk `semantius login --host <host>` and every MCP
+    // client make: read this document, follow authorization_servers to the idp,
+    // then read its RFC 8414 metadata. Without the key the path 404s and the
+    // walk stops there (HOST_RESOLUTION_FAILED), although the idp itself is
+    // working perfectly.
+    //
+    // A PATH, not a URL: the published `resource` is this origin plus the path,
+    // so it tracks whatever host the request arrived on and stays consistent
+    // with the issuer named beside it — the pair a client compares
+    // byte-for-byte. `/rest` is PostgREST, the same upstream `handle_path
+    // /rest/*` proxies in the Caddyfile.
+    //
+    // `scopes` is left out (so `[]`). A client APPENDS scopes_supported to what
+    // it already requests and sends the result to /oauth2/authorize, where an
+    // unknown scope fails the login, so only add one that is in `scopes` above
+    // — the idp refuses to start otherwise.
+    "protectedResources": [{ "path": "/rest" }],
+
     // false: a client removed from oauth_clients.jsonc is disabled and its tokens
     // revoked. true deletes its rows instead.
     "reconcile": { "prune": false }

@@ -91,6 +91,16 @@
       // access-token TTL without reopening a browser.
       "scopes": ["openid", "profile", "email", "offline_access"],
 
+      // A file-declared client defaults to `skipConsent: true` — an operator
+      // wrote the entry down, so asking the user to approve an application
+      // their own organization registered is a click that teaches them to
+      // click. This one is explicit the other way. The CLI runs on the user's
+      // own machine and asks for `offline_access`: a refresh token that keeps
+      // a terminal signed in for 30 days, long past the browser window that
+      // granted it. The consent screen is the one place that is said out loud,
+      // and it names the scopes, so the click is a real question here.
+      "skipConsent": false,
+
       // No browser to send anywhere after an RP-initiated logout, so no
       // postLogoutRedirectUris — and `enableEndSession` defaults to true and
       // refuses to start without one, hence the explicit false. The CLI logs
