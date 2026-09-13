@@ -379,6 +379,10 @@ services:
       # Honour the CLI's `NOTIFY pgrst, 'reload schema'` after each migration.
       PGRST_DB_CHANNEL_ENABLED: "true"
       PGRST_DB_CHANNEL: "pgrst"
+      # Keep pooled connections warm through normal pauses. The 30 s default makes the
+      # next N requests after any pause (N = pooled connections) open fresh backends at
+      # ~290 ms each. 1800 matches db-pool-max-lifetime, so a higher value adds nothing.
+      PGRST_DB_POOL_MAX_IDLETIME: "${PGRST_DB_POOL_MAX_IDLETIME:-1800}"
       PGRST_SERVER_PORT: "3000"
       # The host the spec advertises to clients. Without this PostgREST emits its
       # bind address (0.0.0.0:3000), so the docs' "Test Request" calls
