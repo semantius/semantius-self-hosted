@@ -193,7 +193,9 @@
   "oauth": {
     "accessTokenTtl": "15m",
     "idTokenTtl": "1h",
-    "codeTtl": "60s",
+    // Also how long a user has on the sign-in page, and again on the consent
+    // page, before the pending authorization expires (idp D130).
+    "codeTtl": "5m",
     "refreshTokenTtl": "30d",
     "refreshTokenMaxLifetime": "90d",
     // A client in oauth_clients.jsonc may only reference scopes declared here.

@@ -1,3 +1,11 @@
+# Every text file is LF in the index *and* in the working tree, whatever the
+# machine's core.autocrlf says. Until 2026-09-14 only the three rules below
+# existed, so on a Windows checkout under autocrlf=true everything else was
+# CRLF when git wrote it and LF when a tool did, and git warned `LF will be
+# replaced by CRLF` on every file a generator touched (dokploy-build.sh writes
+# LF). Same rule, same reasoning as semantius-idp's .gitattributes.
+* text=auto eol=lf
+
 # The Caddyfile is bind-mounted raw into the caddy container, which cannot parse
 # CRLF. Force LF regardless of the checkout platform.
 Caddyfile text eol=lf
