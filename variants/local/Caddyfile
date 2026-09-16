@@ -39,9 +39,7 @@
 	# keeps the method).
 	redir /rest /rest/ 308
 	redir /api-docs /api-docs/ 308
-	# >>> feature:bundled-idp
 	redir /idp /idp/ 308
-	# <<< feature:bundled-idp
 
 	# THE DOCS' Accept HEADER, collapsed to plain JSON.
 	#
@@ -67,7 +65,6 @@
 	@pgrstDocsAccept header Accept "application/json, application/vnd.pgrst.object+json*"
 	request_header @pgrstDocsAccept Accept application/json
 
-	# >>> feature:bundled-idp
 	# /gateway/<name> is the idp's authenticating reverse proxy. It lives at
 	# /idp/gateway upstream, like the rest of the app; this serves it at the
 	# short root-level form instead.
@@ -87,7 +84,6 @@
 		rewrite * /idp{uri}
 		reverse_proxy idp:3000
 	}
-	# <<< feature:bundled-idp
 
 	# PostgREST, and there are TWO ways in. THIS one is direct: the prefix is
 	# stripped and the request reaches the API with whatever `Authorization` the
@@ -106,7 +102,6 @@
 		reverse_proxy scalar:8080
 	}
 
-	# >>> feature:bundled-idp
 	# --- the identity provider ----------------------------------------------
 	#
 	# Two rules, and both are easy to get wrong in ways that fail quietly.
@@ -147,7 +142,6 @@
 	handle /idp/* {
 		reverse_proxy idp:3000
 	}
-	# <<< feature:bundled-idp
 
 	handle {
 		reverse_proxy nginx:80

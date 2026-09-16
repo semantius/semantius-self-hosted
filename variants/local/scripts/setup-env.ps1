@@ -31,10 +31,8 @@ function New-RandomBytes([int]$count) {
 # Hex for the passwords that get spliced into connection URLs -- the same split
 # as setup-env.sh.
 function New-UrlSafePassword { (New-RandomBytes 24 | ForEach-Object { $_.ToString('x2') }) -join '' }
-# >>> feature:bundled-idp
 # Base64 for IDP_SECRET, which is never spliced into a URL.
 function New-Secret          { [Convert]::ToBase64String((New-RandomBytes 48)) }
-# <<< feature:bundled-idp
 
 # `[^\r\n]*` rather than `.*`: in .NET `.` matches a lone \r, so `.*$` under (?m)
 # would eat the CR of a CRLF file and leave that one line LF-terminated in an
@@ -57,10 +55,8 @@ $text = [IO.File]::ReadAllText($example)
 $generated = @('POSTGRES_PASSWORD', 'SEMANTIUS_AUTHENTICATOR_PASSWORD')
 $text = Set-EnvValue $text 'POSTGRES_PASSWORD'                (New-UrlSafePassword)
 $text = Set-EnvValue $text 'SEMANTIUS_AUTHENTICATOR_PASSWORD' (New-UrlSafePassword)
-# >>> feature:bundled-idp
 $text = Set-EnvValue $text 'IDP_SECRET'                       (New-Secret)
 $generated = @('IDP_SECRET') + $generated
-# <<< feature:bundled-idp
 
 # Temp file then move, so an interrupted run cannot leave a half-substituted .env
 # behind -- one that would boot with a dev secret still in it. UTF8 with NO BOM:

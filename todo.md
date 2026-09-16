@@ -6,7 +6,7 @@ that change is implemented and verified (see [README.md](README.md)).
 ## Blocking a publish
 
 - [ ] **Add `logo.svg` at the repo root.** `dokploy/meta.json` references
-      `logo.svg` and `./dokploy-build.sh` copies it into `dokploy/` when it exists
+      `logo.svg` and `./build.sh` copies it into `dokploy/` when it exists
       — right now it doesn't, so the build prints a MISSING reminder and the
       gallery card would render without a logo. Drop the Semantius SVG in and
       re-run the build.
@@ -44,9 +44,9 @@ that change is implemented and verified (see [README.md](README.md)).
 
 - [ ] **Regeneration drift guard.** `dokploy/` is generated and committed, so it can
       silently go stale when `docker-compose.yml` or `Caddyfile` change. Add a CI
-      step that runs `./dokploy-build.sh` and fails if the working tree is dirty.
+      step that runs `./build.sh` and fails if the working tree is dirty.
 
-- [ ] *(optional)* Have `dokploy-build` also emit the Dokploy Base64 import blob, so
+- [ ] *(optional)* Have `build` also emit the Dokploy Base64 import blob, so
       importing into an instance is copy-paste with no manual encoding step.
 
 ## Unrelated observation

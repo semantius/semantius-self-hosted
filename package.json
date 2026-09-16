@@ -4,7 +4,7 @@
   "description": "Self-hosting stack for Semantius — Docker Compose and Dokploy",
   "private": true,
   "scripts": {
-    "dokploy-build": "node scripts/dokploy-build.mjs"
+    "build": "node scripts/build.mjs"
   },
   "dependencies": {
     "yaml": "^2.9.0"

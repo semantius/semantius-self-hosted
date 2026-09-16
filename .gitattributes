@@ -2,7 +2,7 @@
 # machine's core.autocrlf says. Until 2026-09-14 only the three rules below
 # existed, so on a Windows checkout under autocrlf=true everything else was
 # CRLF when git wrote it and LF when a tool did, and git warned `LF will be
-# replaced by CRLF` on every file a generator touched (dokploy-build.sh writes
+# replaced by CRLF` on every file a generator touched (build.sh writes
 # LF). Same rule, same reasoning as semantius-idp's .gitattributes.
 * text=auto eol=lf
 

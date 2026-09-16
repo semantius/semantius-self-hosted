@@ -1,3 +1,23 @@
+# The Semantius stack, complete: PostgreSQL with the pg_semantius extension, a
+# PostgREST HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth
+# identity provider — all behind one Caddy front door, on host ports.
+
+# THIS FOLDER IS RUNNABLE AS IT STANDS:
+
+#   ./setup-env.sh     write .env with freshly generated secrets
+#   ./create.sh        fresh containers AND a fresh database
+#   ./up.sh            recreate the containers, KEEP the data
+
+# Auth is included rather than assumed: the idp service is the default issuer,
+# so a first run is a complete auth story with nothing to register anywhere.
+# Open the front door, and the sign-in bounce lands on a setup page for as long
+# as the user table is empty — whoever completes it is the first administrator.
+
+# GENERATED from the repository root (docker-compose.yml + Caddyfile +
+# .env.example + idp-config/) by scripts/build.mjs. Edit the sources and
+# regenerate; edits here are overwritten by the next build.
+
+
 name: semantius
 
 # PostgREST stack: PostgreSQL 18 + the pg_semantius extension, fronted by
@@ -6,13 +26,11 @@ name: semantius
 # the DB over SCRAM as `semantius_authenticator`, SET ROLE-ing into `authenticated`
 # (valid token) or `anon` (no token) per request.
 #
-# >>> feature:bundled-idp
 # The tokens come from the BUNDLED `idp` service (semantius-idp) — a full
 # OIDC/OAuth issuer sharing this stack's Postgres, mounted at /idp on the front
 # door. It is the DEFAULT issuer: a fresh `create` is a complete auth story with
 # no external IdP. Point VITE_OAUTH_CONFIG / VITE_OAUTH_CLIENT_ID / JWKS_URL
 # elsewhere to run against your own instead.
-# <<< feature:bundled-idp
 #
 # Its OWN compose project (semantius, set by `name:` above) on its OWN host
 # ports, so it runs alongside the pgdocker CLI (semantius-cli, 5432) and ext
@@ -30,10 +48,8 @@ name: semantius
 # FRONT DOOR: the `semantius` service (host port WEB_PORT, default 3000) is the
 # single public entrypoint — `/` serves the admin SPA (`nginx`), `/rest/*` proxies to
 # PostgREST and `/api-docs/*` to Scalar, both with the prefix stripped.
-# >>> feature:bundled-idp
 # `/idp/*` + `/.well-known/*` reach the identity provider (prefix INTACT there —
 # it is part of the issuer URL).
-# <<< feature:bundled-idp
 # The routes live in the sibling ./Caddyfile,
 # bind-mounted as a REGULAR file: edit it and `docker compose restart semantius` to
 # apply. Only the DATA TIER keeps host ports here (postgres, pgbouncer — real
@@ -85,7 +101,7 @@ services:
       # connect (PostgREST survives it by retrying in a loop; the idp does not).
       # start_period covers the init — extension install, roles, the optional
       # NWIND load — without those failures counting toward `retries`.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${POSTGRES_DB:-semantius}"]
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${POSTGRES_DB:-semantius}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -96,13 +112,11 @@ services:
   # LOCAL ROLE pattern, see pgdocker/README.md). It pools TWO logins:
   #   `semantius_authenticator`  external apps talking SQL directly, on the
   #                              published PGBOUNCER_PORT;
-  # >>> feature:bundled-idp
   #   `postgres`                 the RUNTIME connection of the bundled idp below
   #                              (its DATABASE_URL). The idp's startup, migrations,
   #                              CLI and cleanup job hold SESSION advisory locks,
   #                              which do not survive a pooler — those use
   #                              DATABASE_URL_ADMIN, direct to postgres:5432.
-  # <<< feature:bundled-idp
   # PostgREST still connects to postgres directly as well: it needs LISTEN/NOTIFY
   # (PGRST_DB_CHANNEL), which transaction pooling does not support.
   #
@@ -176,7 +190,6 @@ services:
     # `x-` keys, so the local stack does not notice; the variant build removes
     # every node carrying a feature it was told to drop, and strips the key from
     # the ones that stay. See scripts/build.mjs.
-    x-semantius-feature: bundled-idp
     image: ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION:-latest}
     # `always` keeps a released tag honest — it is re-pulled on every create/up.
     # A LOCALLY BUILT image needs `missing`, or the pull clobbers it with the
@@ -284,7 +297,7 @@ services:
     stop_grace_period: 30s
     healthcheck:
       # The image is a Bun runtime with no shell utilities in it — no curl, no wget.
-      test: ["CMD", "bun", "-e", "const r = await fetch(process.env.IDP_HEALTH_URL); process.exit(r.ok ? 0 : 1)"]
+      test: [ "CMD", "bun", "-e", "const r = await fetch(process.env.IDP_HEALTH_URL); process.exit(r.ok ? 0 : 1)" ]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -301,7 +314,6 @@ services:
   # can read it.
   #
   # KEYS URL: JWKS_URL, when set, is fetched directly.
-  # >>> feature:bundled-idp
   # It DEFAULTS to the bundled
   # idp reached IN-NETWORK (http://idp:3000/idp/.well-known/jwks.json) —
   # deliberately explicit rather than derived, because the `jwks_uri` the idp
@@ -310,7 +322,6 @@ services:
   #
   # For an EXTERNAL issuer, set JWKS_URL empty and VITE_OAUTH_CONFIG to that
   # issuer's discovery URL:
-  # <<< feature:bundled-idp
   # An empty JWKS_URL makes this service DERIVE the keys
   # URL from the discovery document's `jwks_uri`, so the issuer is named once.
   #
@@ -418,9 +429,7 @@ services:
       PGRST_OPENAPI_MODE: "ignore-privileges"
       # Include securityDefinitions (JWT bearer, Authorization header) in the spec
       # so the Scalar docs render an "Authentication" box for pasting a token.
-      # >>> feature:bundled-idp
       # Sign in at /idp to get one, or use an API key against /gateway/rest.
-      # <<< feature:bundled-idp
       PGRST_OPENAPI_SECURITY_ACTIVE: "true"
       # Honour the CLI's `NOTIFY pgrst, 'reload schema'` after each migration.
       PGRST_DB_CHANNEL_ENABLED: "true"
@@ -436,13 +445,11 @@ services:
       # The browser resolves this URL, so it must be browser-reachable — NOT the
       # in-network `postgrest` hostname. The default is this stack's OWN front door
       # (the front door on WEB_PORT), on the route DOCS_API_ROUTE names.
-      # >>> feature:bundled-idp
       # That is /gateway/rest — the idp's authenticating proxy — NOT the direct
       # /rest one, because the gateway exchanges an `x-api-key` for a bearer
       # token, so "Test Request" works with a key rather than a hand-minted JWT.
       # Either route reaches the same PostgREST; only this advertised basePath
       # decides which one the generated calls use.
-      # <<< feature:bundled-idp
       # Going live, set PUBLIC_API_URL to the PUBLIC front-door URL INCLUDING
       # that prefix. See README / .env.example.
       #
@@ -482,11 +489,9 @@ services:
   # freshly attached domain the spec loads here while "Test Request" still calls
   # the host the spec advertises. Set DOCS_SPEC_URL only to point the docs at a
   # spec somewhere else entirely.
-  # >>> feature:bundled-idp
   # It goes through the idp gateway, so the browser's idp session cookie is
   # enough to read the spec AND to try a call — no key to paste, which is the
   # point of the gateway route rather than /rest.
-  # <<< feature:bundled-idp
   #
   # One more thing is needed for "Test Request" to work, and it lives in the
   # ../Caddyfile: Scalar sends EVERY content type the spec declares in one Accept
@@ -618,7 +623,7 @@ services:
       ENV_FILE: /dev/null
     healthcheck:
       # busybox wget — the nginx:alpine base has no curl.
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      test: [ "CMD", "wget", "-q", "--spider", "http://127.0.0.1/" ]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -1,0 +1,18 @@
+{
+  "platform": "compose",
+  "removeFeatures": ["bundled-idp"],
+  "required": [
+    "VITE_OAUTH_CONFIG",
+    "VITE_OAUTH_CLIENT_ID",
+    "VITE_OAUTH_AUDIENCE",
+    "VITE_OAUTH_SCOPE",
+    "PGRST_JWT_AUD"
+  ],
+  "defaults": {
+    "JWKS_URL": "",
+    "DOCS_API_ROUTE": "/rest",
+    "PGRST_JWT_ROLE_CLAIM_KEY": ".role",
+    "VITE_BACKEND_TYPE": "custom",
+    "VITE_UI_CUSTOMIZER": ""
+  }
+}

@@ -1,0 +1,18 @@
+ The Semantius stack, complete: PostgreSQL with the pg_semantius extension, a
+ PostgREST HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth
+ identity provider — all behind one Caddy front door, on host ports.
+
+ THIS FOLDER IS RUNNABLE AS IT STANDS:
+
+   ./setup-env.sh     write .env with freshly generated secrets
+   ./create.sh        fresh containers AND a fresh database
+   ./up.sh            recreate the containers, KEEP the data
+
+ Auth is included rather than assumed: the idp service is the default issuer,
+ so a first run is a complete auth story with nothing to register anywhere.
+ Open the front door, and the sign-in bounce lands on a setup page for as long
+ as the user table is empty — whoever completes it is the first administrator.
+
+ GENERATED from the repository root (docker-compose.yml + Caddyfile +
+ .env.example + idp-config/) by scripts/build.mjs. Edit the sources and
+ regenerate; edits here are overwritten by the next build.

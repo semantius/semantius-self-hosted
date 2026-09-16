@@ -1,0 +1,27 @@
+ The Semantius stack against YOUR identity provider: PostgreSQL with the
+ pg_semantius extension, a PostgREST HTTP API, its OpenAPI docs and the admin
+ SPA, behind one Caddy front door. No identity provider is included — an
+ external OIDC issuer signs the tokens, and this stack only verifies them.
+
+ IT WILL NOT START UNTIL IT IS CONFIGURED, by design. Copy .env.example to .env
+ and fill the first block: the issuer's discovery URL, the client id for the
+ SPA, the audience and scope its tokens are minted for, and the audience this
+ stack requires. Compose refuses to start while any of them is empty.
+
+   cp .env.example .env     then edit it
+   ./up.sh                  start
+   entra/                   Microsoft Entra ID, worked end to end, with a
+                            script that creates the registrations for you
+
+ WHAT YOUR ISSUER MUST DO: mint an access token whose role claim says
+ `authenticated` — either `"role":"authenticated"` or an `authenticated` entry
+ in a `roles` array (set PGRST_JWT_ROLE_CLAIM_KEY to match) — carrying a stable
+ `sub`. Users are created in the database on first sign-in from that `sub`.
+
+ GONE WITH THE IDENTITY PROVIDER: the /idp and /gateway routes, API keys, and
+ the docs' one-click "Test Request" (it used the idp's authenticating proxy;
+ paste a bearer token instead). Key rotation is manual here — the repository
+ README says when and how.
+
+ GENERATED from the repository root by scripts/build.mjs. Edit the
+ sources and regenerate; edits here are overwritten by the next build.

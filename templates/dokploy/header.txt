@@ -1,0 +1,31 @@
+ The Semantius stack: PostgreSQL with the pg_semantius extension, a PostgREST
+ HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth identity
+ provider — all behind one Caddy front door.
+
+ ROUTING. Attach your domain to the `semantius` service on port 80 — it is the
+ only way in, and it fans out internally:
+   /              the admin SPA          /idp/*         the identity provider
+   /rest/*        the API                /.well-known/* its discovery documents
+   /api-docs/*    the API docs           /gateway/*     the API, via the idp's
+                                                        authenticating proxy
+
+ REQUIRED ENVIRONMENT — everything else has a working default:
+   POSTGRES_PASSWORD  the database superuser
+   IDP_SECRET         signs the identity provider's sessions and encrypts its
+                      JWT signing keys — >= 32 random bytes, set BEFORE first
+                      boot (changing it later logs everyone out and makes the
+                      stored signing keys undecryptable)
+ Both must be URL-safe (no `@ : / ? #` or spaces) — they are spliced into
+ connection strings. Importing this as a template generates both for you.
+
+ FIRST RUN. No account exists yet, and there is nothing special to visit: open
+ the deployment and the app's sign-in bounce lands on the setup page, which
+ stands in for the login page until somebody completes it. Whoever does becomes
+ the first administrator. Set IDP_BASE_URL to your real domain (plus /idp) once
+ you have one; it is the base of every e-mail link.
+
+ REQUIRES docker compose >= 2.23.1 on the target server (inline configs.content).
+
+ GENERATED — edits here apply to this deployment only and are lost on the next
+ import. The source is github.com/semantius/semantius-self-hosted; this file is
+ built from it by scripts/build.mjs.

@@ -7,17 +7,13 @@
 #
 #   POSTGRES_PASSWORD                 the `postgres` DBA login
 #   SEMANTIUS_AUTHENTICATOR_PASSWORD  the login PostgREST uses
-# >>> feature:bundled-idp
 #   IDP_SECRET                        signs idp sessions, encrypts its JWT keys
-# <<< feature:bundled-idp
 #
 # WHY AT .env CREATION and not later: they are load-bearing BEFORE first boot.
 # The two passwords are baked into the database by the image's first-init
 # scripts, which run ONCE per data directory.
-# >>> feature:bundled-idp
 # IDP_SECRET encrypts the idp's stored signing keys, so changing it after the
 # fact logs everyone out and makes those keys undecryptable.
-# <<< feature:bundled-idp
 # Generating them here makes the secure state the DEFAULT state instead of a
 # step nobody reads.
 #
@@ -49,7 +45,6 @@ gen_urlsafe() {
   fi
 }
 
-# >>> feature:bundled-idp
 # IDP_SECRET is never spliced into a URL — it is read straight from the
 # environment — so the full base64 alphabet is fine, and 48 bytes clears the
 # ">= 32 random bytes" the idp requires with room to spare.
@@ -60,7 +55,6 @@ gen_secret() {
     LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 64 || true
   fi
 }
-# <<< feature:bundled-idp
 
 pg_password="$(gen_urlsafe)"
 auth_password="$(gen_urlsafe)"
@@ -76,12 +70,10 @@ SED_ARGS=(
 GENERATED_KEYS="POSTGRES_PASSWORD SEMANTIUS_AUTHENTICATOR_PASSWORD"
 GENERATED_VALUES=("$pg_password" "$auth_password")
 
-# >>> feature:bundled-idp
 idp_secret="$(gen_secret)"
 SED_ARGS+=(-e "s|^IDP_SECRET=.*|IDP_SECRET=${idp_secret}|")
 GENERATED_KEYS="IDP_SECRET ${GENERATED_KEYS}"
 GENERATED_VALUES+=("$idp_secret")
-# <<< feature:bundled-idp
 
 # 32 chars is well short of what either generator produces; this only catches a
 # box with neither openssl nor a readable /dev/urandom, where a SHORT or EMPTY
