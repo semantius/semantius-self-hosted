@@ -1,7 +1,7 @@
 # Semantius — self-hosting stack
 
 Everything needed to **self-host Semantius**: a Docker Compose stack that puts an
-HTTP API with browsable OpenAPI docs, an admin SPA and an **OIDC identity
+HTTP API with browsable OpenAPI docs, an web app and an **OIDC identity
 provider** in front of a PostgreSQL 18 database carrying the `pg_semantius`
 extension.
 
@@ -107,7 +107,7 @@ rest are stock upstream images, unmodified:
 | In the diagram | Image | Upstream |
 |---|---|---|
 | Caddy | `caddy:2-alpine` | [caddyserver.com](https://caddyserver.com) · [caddyserver/caddy](https://github.com/caddyserver/caddy) |
-| Frontend App | `ghcr.io/semantius/semantius-app` | the Semantius admin SPA, a static build served by [nginx](https://nginx.org) — published by the Semantius project |
+| Frontend App | `ghcr.io/semantius/semantius-app` | the Semantius web app, a static build served by [nginx](https://nginx.org) — published by the Semantius project |
 | semantius-idp | `ghcr.io/semantius/semantius-idp` | [semantius/semantius-idp](https://github.com/semantius/semantius-idp) |
 | Scalar docs | `scalarapi/api-reference` | [scalar.com](https://scalar.com) · [scalar/scalar](https://github.com/scalar/scalar) |
 | PostgREST | `postgrest/postgrest` | [postgrest.org](https://postgrest.org) · [PostgREST/postgrest](https://github.com/PostgREST/postgrest) |
@@ -137,12 +137,12 @@ above is only worth making when you want to look the file over before booting.
 Either way the three secrets in the new `.env` are freshly generated, never the
 values `.env.example` carries — see [the three per-installation secrets](#the-three-per-installation-secrets).
 
-Then open **http://localhost:3000/** — the admin SPA. It sends you to sign in,
+Then open **http://localhost:3000/** — the web app. It sends you to sign in,
 and while the idp's user table is empty the sign-in page *is* the first-run setup
 page: whoever completes it becomes the first administrator and lands back in the
 SPA. There is no bootstrap account and no password in the environment.
 
-- **Front door:** http://localhost:3000 — admin SPA at `/`, API at `/rest/`
+- **Front door:** http://localhost:3000 — web app at `/`, API at `/rest/`
   (or `/gateway/rest/` for the same API through the idp's authenticating proxy,
   which accepts an API key), docs at `/api-docs/`, identity provider at `/idp/`.
   It is the only published HTTP port — every URL the stack emits carries its
@@ -224,7 +224,7 @@ with `docker compose`, the **container** name with plain `docker`:
 | `jwks-fetch` | `curlimages/curl:latest` | — | **one-shot**: downloads the issuer JWKS to a file PostgREST can read (see below) |
 | `postgrest` | `postgrest/postgrest:latest` | — | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/`. Reach it through `semantius` (`/rest/`, `/gateway/rest/`) |
 | `scalar` | `scalarapi/api-reference:latest` | — | renders PostgREST's Swagger 2.0 spec as browsable docs. Reach it through `semantius` (`/api-docs/`) |
-| `nginx` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static admin SPA (nginx). **SPA only** — it proxies nothing; reach it through `semantius`. Runtime config is written to `config.js` (`window.__ENV__`) at container start from its `VITE_*` env by the image's `gen-config.sh`, so one image serves every environment — but only the names on that script's canonical list are emitted, so a **new** `VITE_*` setting needs an app image that knows it |
+| `nginx` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static web app (nginx). **SPA only** — it proxies nothing; reach it through `semantius`. Runtime config is written to `config.js` (`window.__ENV__`) at container start from its `VITE_*` env by the image's `gen-config.sh`, so one image serves every environment — but only the names on that script's canonical list are emitted, so a **new** `VITE_*` setting needs an app image that knows it |
 | `semantius` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`semantius-idp-config/config.jsonc`](templates/semantius-idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](templates/Caddyfile) — edit it and `docker compose restart semantius` |
 
 The registry images use `:latest` and `pull_policy: always` (re-pulled on every
@@ -264,9 +264,9 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 | `SEMANTIUS_IDP_VERSION` | `latest` | `idp` | Tag of the `semantius-idp` image. Re-pulled on every `create`; pin for reproducible/server deploys. |
 | `IDP_BASE_URL` | `http://localhost:${WEB_PORT}/idp` | `idp` | The **canonical issuer**: scheme + host + the `/idp` mount path, no trailing slash. Every absolute URL the idp emits derives from it — **e-mail links always do**, even with `IDP_DYNAMIC_ISSUER` on. ⚠️ **Set going live** (`https://yourdomain.com/idp`), and update it once after attaching a different domain (for the e-mail links). |
 | `IDP_DYNAMIC_ISSUER` | `false` | `idp` | Derive the issuer (and every browser-facing URL **except e-mail links**) per request from the arriving host. Setting it `true` is *your* assertion about the ingress — see [Serving more than one domain](#serving-more-than-one-domain-idp_dynamic_issuer) below. The Dokploy blueprint sets it. |
-| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`semantius-idp-config/oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
+| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the web app, no path. [`semantius-idp-config/oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
 | `RESEND_API_KEY` | *(unset)* | `idp` | Optional. Without it the idp runs **degraded**: password reset, e-mail verification and all notifications are disabled and hidden. Fine locally (admins create users); set it for anything real. |
-| `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `nginx`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
+| `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `nginx`, `jwks-fetch` | OIDC discovery URL. The web app resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
 | `VITE_OAUTH_CLIENT_ID` | `public-client` | `nginx` | Public OAuth client id. Matches the SPA registered in [`semantius-idp-config/oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc). |
 | `VITE_OAUTH_AUDIENCE` | `${IDP_JWT_AUDIENCE}` (`semantius://api`) | `nginx` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
 | `IDP_JWT_AUDIENCE` | `semantius://api` | `idp`, `nginx` | The audience the bundled idp registers and mints as `aud`, and the default of `VITE_OAUTH_AUDIENCE` — one var moves both sides. A **fixed URI** on purpose: an audience derived from the issuer URL goes stale the moment a domain is attached after deploy. Seeding `_settings.jwt_aud`? Seed exactly this value. |
@@ -275,7 +275,7 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 | `POSTGRES_DB` | `semantius` | `postgres`, `postgrest` | Database created on first init and served by the API. |
 | `SEMANTIUS_AUTHENTICATOR_PASSWORD` | **(required)** — generated by `setup-env` | `postgres`, `postgrest` | Password for `semantius_authenticator`, the role PostgREST logs in as. Consumed by the image's baked `20-authenticator-login.sh` **and** by `PGRST_DB_URI` — kept in sync automatically. Per-environment secret; the stack refuses to start if unset. |
 | `SEMANTIUS_DB_VERSION` | `latest` | `postgres` | Tag of the `semantius/postgres` image to run. Pin (e.g. `0.3.0-pg18`) for reproducible/server deploys; `latest` tracks your local `docker-postgres/build.sh`. |
-| `SEMANTIUS_APP_VERSION` | `latest` | `nginx` | Tag of the `semantius/semantius-app` admin SPA image. Re-pulled on every `create`; pin for reproducible/server deploys. |
+| `SEMANTIUS_APP_VERSION` | `latest` | `nginx` | Tag of the `semantius/semantius-app` web app image. Re-pulled on every `create`; pin for reproducible/server deploys. |
 | `NWIND` | *(unset)* | `postgres` | Set to **any** non-empty value (e.g. `TRUE`) to load the optional Northwind demo module on first init. Takes effect only on a **fresh** data volume (init runs once). |
 | `POSTGRES_PORT` | `5434` | `postgres` | Host port for Postgres (5432/5433 belong to pgdocker's cli/ext stacks). |
 | `PGBOUNCER_PORT` | `6432` | `pgbouncer` | Host port for the transaction-pooled PgBouncer endpoint. |
@@ -329,7 +329,7 @@ change them in the database too, or recreate with `./create.sh`.
   compose so a stray host value cannot redirect the container to another
   configuration or another schema.
 - `VITE_CONTROL_PLANE_URL` (a single space) and `VITE_BACKEND_TYPE`
-  (`self_hosted`) — the pair that puts the admin SPA in self-hosted mode, per
+  (`self_hosted`) — the pair that puts the web app in self-hosted mode, per
   the note above. Pinned, not `.env`-driven.
 The `postgrest`, `nginx` and `semantius` services also set fixed operational env
 (`PGRST_*`, `VITE_API_BASE_URL`, `VITE_CONTROL_PLANE_URL`, …) inline; those are
@@ -399,7 +399,7 @@ End to end, with the bundled issuer:
 
 ```mermaid
 sequenceDiagram
-    participant SPA as Admin SPA (/)
+    participant SPA as Web app (/)
     participant IDP as idp (/idp)
     participant Caddy
     participant PGRST as PostgREST
@@ -666,11 +666,11 @@ if you set `oauth.reconcile.prune`). Dynamic client registration is off and the
 client CRUD endpoints are unreachable, so this file is the only way in.
 
 Redirect URIs are **exact matches, no wildcards**. The shipped SPA entry builds
-its one URI as `${PUBLIC_WEB_ORIGIN}/oauth2_callback`, which is what the admin app
+its one URI as `${PUBLIC_WEB_ORIGIN}/oauth2_callback`, which is what the web app
 actually requests (`${window.location.origin}/oauth2_callback`). A mismatch shows
 up as an error page on the idp naming the offending URI.
 
-Two clients ship in the file: `public-client` (the admin SPA above) and
+Two clients ship in the file: `public-client` (the web app above) and
 `semantius-cli` — `type: "native"`, public, PKCE, catching its code on
 `http://127.0.0.1:5368{2,3,4}/callback`. Loopback IPs get RFC 8252 §7.3's
 port carve-out, so a CLI binding any other 127.0.0.1 port still matches;

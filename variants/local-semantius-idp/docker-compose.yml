@@ -1,5 +1,5 @@
 # The Semantius stack, complete: PostgreSQL with the pg_semantius extension, a
-# PostgREST HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth
+# PostgREST HTTP API, its OpenAPI docs, the web app, and a bundled OIDC/OAuth
 # identity provider — all behind one Caddy front door, on host ports.
 
 # THIS FOLDER IS RUNNABLE AS IT STANDS:
@@ -46,7 +46,7 @@ name: semantius
 # (recreates the containers, keeps the data).
 #
 # FRONT DOOR: the `semantius` service (host port WEB_PORT, default 3000) is the
-# single public entrypoint — `/` serves the admin SPA (`nginx`), `/rest/*` proxies to
+# single public entrypoint — `/` serves the web app (`nginx`), `/rest/*` proxies to
 # PostgREST and `/api-docs/*` to Scalar, both with the prefix stripped.
 # `/idp/*` + `/.well-known/*` reach the identity provider (prefix INTACT there —
 # it is part of the issuer URL).
@@ -249,7 +249,7 @@ services:
       # into a URL, so POSTGRES_PASSWORD must be URL-safe.
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@pgbouncer:5432/${POSTGRES_DB:-semantius}
       DATABASE_URL_ADMIN: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-semantius}
-      # ORIGIN of the admin SPA — no path, no trailing slash.
+      # ORIGIN of the web app — no path, no trailing slash.
       # semantius-idp-config/oauth_clients.jsonc builds the SPA's redirect URIs from it, and
       # those are matched EXACTLY, so it has to be the origin the browser really uses.
       # It MAY carry the idp's `{host}` template (PUBLIC_WEB_ORIGIN=https://{host}),
@@ -512,8 +512,8 @@ services:
     environment:
       API_REFERENCE_CONFIG: '{"sources":[{"url":"${DOCS_SPEC_URL:-${DOCS_API_ROUTE:-/gateway/rest}}/","title":"Semantius API"}]}'
 
-  # --- Admin SPA -------------------------------------------------------------
-  # Static single-page admin app (nginx, container port 80). SPA ONLY — it does no
+  # --- Web app -------------------------------------------------------------
+  # The web app: a static single-page build (nginx, container port 80). SPA ONLY — it does no
   # proxying of its own; the `semantius` front door below routes /rest/* and /api-docs/*
   # and falls through to here for everything else. Deliberately NOT published on a
   # host port — reach it through the front door on WEB_PORT. Runtime config is generated

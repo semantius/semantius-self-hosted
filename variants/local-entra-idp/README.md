@@ -1,220 +1,196 @@
-# Microsoft Entra ID as the issuer
+# Semantius with Microsoft Entra ID
 
-One worked example of the `external-idp/` variant. Everything here is Entra —
-the variant itself is issuer-agnostic, and the root
-[README](../../../README.md#external-identity-provider-external-idp) describes
-what any issuer must provide.
+This folder is a complete Semantius stack — PostgreSQL, the HTTP API, the API
+docs and the web app behind one front door — with **no identity provider of its
+own**. Your Entra tenant signs the tokens; this stack only verifies them.
 
-Verified against a live tenant on 2026-09-16: the tokens, the claims, the error
-codes and the setup steps below are what Entra actually does, not what it ought
-to do.
+It will not start until it is configured. Four steps, below.
 
-## Read this first
+---
 
-**Two things outside this repository have to be in place.**
+## Before you start
 
-1. **A database image that accepts Entra's role claim.** Entra cannot emit a
-   `role` claim — `role` and `roles` are both in its *restricted claim set*, so
-   no claims-mapping policy can produce one. An app role named `authenticated`
-   arrives as `"roles": ["authenticated"]` instead. `rbac.uid()` reads that
-   array when no `role` claim exists; a `pg_semantius` release **older than that
-   change** rejects every request with error `90002` no matter how the rest is
-   configured. Pin `SEMANTIUS_DB_VERSION` to a release that has it.
-2. **An admin SPA that survives Entra's userinfo endpoint.** Entra's discovery
-   document advertises `https://graph.microsoft.com/oidc/userinfo`, and a token
-   issued for *your* API is refused there. The SPA calls it after sign-in and
-   turns the failure into a blocking error page. Until the app treats userinfo
-   as optional, sign-in completes and then stops on that screen.
+- **Docker**, with `docker compose` v2.
+- **An Entra tenant**, and someone allowed to register applications in it
+  (the *Application Developer* role or higher). That may not be you — see
+  [step 2](#2-register-three-applications-in-entra).
+- **For the script only:** PowerShell 7 and the Azure CLI. Everything it does
+  can be done in the Entra admin center instead.
 
-What *does* work, confirmed end to end: discovery, PKCE, the scope, the
-`resource` parameter the SPA sends, the JWKS download, and a token carrying
-`roles`, `sub`, `email`, `name`, `given_name` and `family_name` — everything
-`get_userinfo()` needs to create the user row.
+Leave `SEMANTIUS_DB_VERSION` and `SEMANTIUS_APP_VERSION` at their default
+(`latest`) unless you have a reason to pin. Entra needs recent images: the
+database must understand Entra's role claim, and the web app must not depend on
+an identity provider's `userinfo` endpoint. Old pins show up as
+[`90002`](#when-it-goes-wrong) or a sign-in that ends on an error page.
 
-## The script
+---
+
+## 1. Create your `.env`
+
+```bash
+./setup-env.sh          # Windows: setup-env.cmd
+```
+
+It copies `.env.example` and generates the database passwords. Nothing else
+writes this file; every later step fills values *into* it.
+
+## 2. Register three applications in Entra
+
+Semantius needs three registrations: one **API** (what tokens are issued *for*),
+one **web app** (what users sign in to), and one **CLI** (for `semantius-cli`).
+
+**With the script**, if you have rights in the tenant:
 
 ```powershell
-az login --tenant <your-tenant>.onmicrosoft.com --allow-no-subscriptions
-./setup-entra.ps1 -FrontDoorUrl https://semantius.example.com
+az login --tenant yourcompany.onmicrosoft.com --allow-no-subscriptions
+./setup-entra.ps1
 ```
 
-`--allow-no-subscriptions` matters: a Microsoft 365 tenant usually carries no
-Azure subscription, and without the flag `az login` ends in *"No subscriptions
-found"* and leaves you signed out. App registrations live in Entra ID and need
-no subscription at all.
+`--allow-no-subscriptions` matters: a Microsoft 365 tenant usually has no Azure
+subscription, and without the flag `az login` ends in *"No subscriptions found"*
+and leaves you signed out. App registrations live in Entra ID and need no
+subscription.
 
-The script creates the three registrations below, pre-authorizes both clients,
-assigns the app role to the account you ran it as, and writes the values into
-`../.env`. It is idempotent — each registration is looked up by display name
-first — and it refuses to touch an `.env` that already has a
-`VITE_OAUTH_CLIENT_ID`. `-ProbeToken` prints a real decoded token at the end,
-which is the fastest way to see what your tenant actually emits.
+The script asks for your front door URL (the origin people open in the browser),
+creates the three registrations, pre-authorizes the clients so nobody has to
+click through a consent screen, assigns the app role to *you*, and writes the
+values into `.env`. Re-running it is safe: it looks each registration up by name
+first, and refuses to touch an `.env` that is already configured.
 
-Undo any of it with `az ad app delete --id <appId>`.
+**By hand**, or if someone else administers the tenant: follow
+[Registering by hand](#registering-by-hand) below. That person can also run
+`./setup-entra.ps1 -NoWrite`, which creates the registrations and *prints* the
+values instead of writing them, for you to paste into `.env`.
 
-## Three registrations, two of them clients
+## 3. Give people access
 
-| Registration | What it is | Appears in `.env` as |
-|---|---|---|
-| **Semantius API** | the **resource**. Tokens are issued *for* it, so it owns `aud`, the `access_as_user` scope and the app role `authenticated`. Nothing ever signs in as it. | `PGRST_JWT_AUD`, and the `api://…` prefix inside `VITE_OAUTH_SCOPE` / `VITE_OAUTH_AUDIENCE` |
-| **Semantius App** | the SPA **client** | `VITE_OAUTH_CLIENT_ID` |
-| **Semantius CLI** | the `semantius-cli` **client** | nothing — a comment only, see [The CLI](#the-cli) |
+In the Entra admin center: **Enterprise applications → Semantius API → Users and
+groups** → assign users or groups to the **`authenticated`** app role.
 
-The bundled idp needs only the two clients, because its audience is a plain
-config string (`semantius://api`). Entra insists the audience be a real app
-registration before it will mint a token for it. That third registration is the
-price of Entra, not a third client.
+This is the gate. Someone without that role can sign in to Microsoft perfectly
+well and still reach nothing here, because their token arrives without the role
+claim. A newly assigned user's first token can still miss it — the assignment
+takes about a minute to reach the token service.
 
-## Doing it by hand
+## 4. Start it
 
-The script does exactly this, and the portal is the place to check its work.
-
-1. **The API.** App registrations → New registration, single tenant. Then:
-   - *Expose an API* → Application ID URI `api://<client-id>` → Add a scope
-     `access_as_user`, admin consent only.
-   - *App roles* → New app role `authenticated`, value **exactly**
-     `authenticated`, allowed member type *Users/Groups*. This value is what
-     PostgREST and `rbac.uid()` read; it is not free-form.
-   - *Manifest* → `requestedAccessTokenVersion: 2`. Without it you get v1
-     tokens, whose `aud` is the `api://…` URI rather than the GUID.
-   - *Token configuration* → add optional claims **email**, **given_name**,
-     **family_name** to the *access* token. `get_userinfo()` reads those three
-     plus `name`; without them the user row is created with a null email, and
-     email is the column the admin UI labels users by.
-2. **The SPA.** New registration → Authentication → Add a platform →
-   **Single-page application**, redirect URI `https://<front door>/oauth2_callback`.
-   The platform choice is load-bearing: a Web or public-client redirect URI is
-   refused at redemption with `AADSTS9002326`, because the SPA redeems its code
-   cross-origin. Then API permissions → the API's `access_as_user`.
-3. **The CLI.** New registration → Authentication → Mobile and desktop
-   applications, redirect URIs `http://127.0.0.1:53682/callback`, `53683`,
-   `53684`; *Allow public client flows* on. Same API permission.
-4. **Skip consent** by pre-authorizing instead: on the API, *Expose an API* →
-   *Add a client application* for the SPA and the CLI. Owning the registrations
-   is then enough; no directory-wide admin consent.
-5. **Assign users.** Enterprise applications → *Semantius API* → Users and
-   groups → add the people who may use the stack, with the `authenticated` role.
-
-## Stack values
-
-```ini
-VITE_OAUTH_CONFIG=https://login.microsoftonline.com/<tenant-id>/v2.0/.well-known/openid-configuration
-VITE_OAUTH_CLIENT_ID=<SPA client id>
-VITE_OAUTH_SCOPE=openid profile email offline_access api://<API client id>/access_as_user
-VITE_OAUTH_AUDIENCE=api://<API client id>
-PGRST_JWT_AUD=<API client id>
-PGRST_JWT_ROLE_CLAIM_KEY=.roles[0]
-JWKS_URL=
-VITE_BACKEND_TYPE=custom
-VITE_UI_CUSTOMIZER={"user":{"menu":[{"title":"Microsoft account","url":"https://myaccount.microsoft.com/","target":"newtab"}]}}
+```bash
+./up.sh                 # Windows: up.cmd      keeps existing data
+./create.sh             # Windows: create.cmd  fresh database, deletes existing data
 ```
 
-Two of those look like one variable and are not:
+Then open your front door (`http://localhost:3000` by default) and sign in.
 
-- **`VITE_OAUTH_AUDIENCE`** is what the SPA *asks for* — the RFC 8707 `resource`
-  parameter. Entra accepts it as long as it matches the resource of the
-  requested scope, so it must be the `api://…` form. A mismatch is
-  `AADSTS9010010 invalid_target`.
-- **`PGRST_JWT_AUD`** is what the token *carries*: for v2 tokens, the bare GUID.
+**On an empty database, the first person to sign in becomes the administrator.**
+Everyone after that gets the default role and sees nothing until an
+administrator grants them more, under Administration → Users.
+
+---
+
+## What ends up in `.env`
+
+| Variable | What it is |
+|---|---|
+| `VITE_OAUTH_CONFIG` | `https://login.microsoftonline.com/<tenant id>/v2.0/.well-known/openid-configuration` |
+| `VITE_OAUTH_CLIENT_ID` | the **web app** registration's Application (client) ID |
+| `VITE_OAUTH_SCOPE` | `openid profile email offline_access api://<API client id>/access_as_user` |
+| `VITE_OAUTH_AUDIENCE` | `api://<API client id>` — what the app *asks* tokens to be issued for |
+| `PGRST_JWT_AUD` | `<API client id>` — what a token actually *carries*, and what the API requires |
+
+The last two look like one setting and are not. Entra accepts the request form
+(`api://…`) and mints tokens whose audience is the bare GUID.
 
 **`PGRST_JWT_AUD` is not optional here.** Entra signs every tenant's tokens with
-the same keys, and neither PostgREST nor the database checks `iss`. Without the
-audience pinned, a token minted in *any* Entra tenant — by anyone who defines an
-app role called `authenticated` — validates against the JWKS this stack
-downloads. On an empty database that token would also win the first-administrator
-election. Pinning the audience to your own single-tenant API registration is
-what closes that. `_settings.jwt_aud` enforces the same check inside the
-database, for callers that reach Postgres directly rather than through PostgREST.
+the same keys, and nothing in this stack checks which tenant a token came from.
+Without the audience pinned to your own single-tenant API registration, a token
+minted in somebody else's tenant would verify against the keys this stack
+downloads.
 
-`VITE_OAUTH_SCOPE` must name the API scope. Without it Entra issues a Microsoft
-Graph token, whose signature this stack cannot verify — Graph tokens are not
-meant for anyone but Graph. `offline_access` is what gets a refresh token;
-without it every expiry becomes a full page redirect.
+Everything else Entra needs is already set in `docker-compose.yml`, because it
+is the same for every tenant: the `.roles[0]` claim key, the empty `JWKS_URL`
+that derives signing keys from the discovery document, the docs route, and an
+account menu pointing at Microsoft's My Account page — with an external issuer
+that is the only place a user can change their own name and e-mail.
 
-`JWKS_URL` stays empty so `jwks-fetch` derives the keys from the discovery
-document. That works unchanged against Entra.
+---
 
-### The user menu
+## Registering by hand
 
-`VITE_BACKEND_TYPE=self_hosted` renders `/idp/account` and `/idp/admin`, which
-do not exist here — and if the bundled idp happens to still be running
-somewhere, those links are worse than missing: they open a *second* identity
-with its own session cookie, showing a different user than the one signed in.
-So the variant uses `custom` with its own menu.
+What the script does, in the Entra admin center.
 
-The entry replacing them is Microsoft's **My Account** portal,
-`https://myaccount.microsoft.com/` — display name, contact details, security
-info, password, devices, recent sign-ins. That link matters more than it looks:
-with an external issuer this stack no longer owns the user's name or e-mail.
-The claims come from Entra, and `upsert_user_from_jwt` copies them into the user
-row at each sign-in, so My Account is the only place they can be changed. Change
-a name there, sign in again, and the row follows.
+### The API
 
-Nothing discovers that URL — OIDC metadata has no field for "where the user
-edits their profile" — so it is a constant per issuer, which is why it lives in
-the menu JSON rather than in the generator.
+**App registrations → New registration**, single tenant. Then:
 
-Two optional extras, same shape:
+- **Expose an API** → set the Application ID URI to `api://<client id>` → **Add
+  a scope** named `access_as_user`, admin consent only.
+- **App roles → Create app role**: display name *Authenticated*, allowed member
+  types *Users/Groups*, **value exactly `authenticated`**. That value is what
+  the API reads; it is not free text.
+- **Manifest** → `"requestedAccessTokenVersion": 2`. Without it you get v1
+  tokens, whose audience is the `api://…` URI rather than the GUID.
+- **Token configuration** → add the optional claims **email**, **given_name**
+  and **family_name** to the *access* token. The user record is created from
+  those; without them it has a name but no e-mail.
 
-```json
-{"title":"Security info","url":"https://mysignins.microsoft.com/security-info","target":"newtab"}
-{"title":"My apps","url":"https://myapps.microsoft.com/","target":"newtab"}
-```
+### The web app
 
-A user signed in to several tenants may land in the wrong one; appending
-`?tenantId=<your tenant id>` is the usual remedy, though Microsoft does not
-document that parameter — test it before shipping it to your users.
+**New registration → Authentication → Add a platform → Single-page
+application**, redirect URI `https://<your front door>/oauth2_callback`.
 
-## Users, roles and the first administrator
+The platform matters: a *Web* or *Mobile and desktop* redirect URI is refused at
+sign-in with `AADSTS9002326`, because the app redeems its code cross-origin.
 
-- The **app role is the gate.** A user without it gets a token with no `roles`
-  claim, PostgREST maps the request to `anon`, and the database is never
-  reached.
-- The **user row is created on first sign-in**, by `get_userinfo()`, keyed on
-  the token's `sub`. Nothing has to be provisioned in advance.
-- `sub` is stable per *resource*, not per client: the SPA and the CLI produce
-  the same `sub` for the same person, so both map to one user row. It is **not**
-  the `oid`, and the id token's `sub` is a different value again — that one
-  belongs to the client and must never be used as an identity here.
-- On a **fresh database** the first person to sign in becomes Administrator.
-  Everyone after that gets the User role, which shows no modules until an
-  administrator grants more. If the database was previously used with the
-  bundled idp, an idp account already holds Administrator, so the first Entra
-  user does *not* get it — grant it in the SPA, or by SQL.
+Then **API permissions** → add the API's `access_as_user` scope.
+
+### The CLI
+
+**New registration → Authentication → Add a platform → Mobile and desktop
+applications**, redirect URIs `http://127.0.0.1:53682/callback`, `:53683`,
+`:53684`. Turn **Allow public client flows** on. Same API permission.
+
+### Skip the consent screen
+
+On the API registration: **Expose an API → Add a client application**, and add
+the web app and the CLI. Owning the registrations is then enough — no
+directory-wide admin consent needed.
+
+---
 
 ## Key rotation
 
-`jwks-fetch` downloads the keys **once per start**. Entra rotates its signing
-keys and publishes new ones ahead of use, so a stale file eventually rejects
-every token. This folder ships no helper scripts, so refresh it with:
+The signing keys are downloaded **once, when the stack starts**. Entra rotates
+its keys, and a stale copy eventually rejects every token. Refresh with:
 
 ```bash
 docker compose run --rm jwks-fetch
 docker compose restart postgrest
 ```
 
-A daily cron entry is the safe default for Entra, which rotates on its own
-schedule rather than yours.
+A daily scheduled run is the safe default, since Entra rotates on its own
+timetable rather than yours.
+
+---
 
 ## When it goes wrong
 
-| Symptom | Cause |
+| What you see | What it means |
 |---|---|
-| `AADSTS9010010 invalid_target` | `VITE_OAUTH_AUDIENCE` doesn't match the resource of `VITE_OAUTH_SCOPE`. Both must name the same `api://…`. |
-| `AADSTS9002326` at redemption | The redirect URI is registered as Web or public client instead of **Single-page application**. |
-| `AADSTS70008` when redeeming by hand | A code issued to a SPA redirect URI lives about **60 seconds**. Only affects manual testing. |
-| Everything 401s as `anon`; no `roles` in the token | The app role isn't assigned — or it was assigned less than a minute ago. Assignments take a moment to reach the token service. |
-| `90002 JWT role claim must be authenticated` | The database image predates the `roles`-array support. Pin a newer `SEMANTIUS_DB_VERSION`. |
-| Sign-in completes, then "Failed to fetch user information from OAuth provider" | The SPA's userinfo call to Microsoft Graph. See [Read this first](#read-this-first). |
-| `90005 JWT audience does not match` | `_settings.jwt_aud` holds a different value than the token's `aud` — for v2 tokens that is the bare GUID, not `api://…`. |
+| `AADSTS9010010` | `VITE_OAUTH_AUDIENCE` and `VITE_OAUTH_SCOPE` name different APIs. Both must point at the same `api://…`. |
+| `AADSTS9002326` at sign-in | The redirect URI is registered as *Web* or *Mobile and desktop* instead of **Single-page application**. |
+| `AADSTS50011` | The redirect URI in Entra does not match the origin people actually open. It is matched exactly, including the port. |
+| Everything is refused; the token has no `roles` | The user is not assigned to the `authenticated` app role — or was assigned less than a minute ago. |
+| `90002 JWT role claim must be authenticated` | The database image is older than Entra support. Unpin `SEMANTIUS_DB_VERSION`, or pin a newer release. |
+| `90005 JWT audience does not match` | `_settings.jwt_aud` in the database holds a different value than the token's audience — for v2 tokens that is the bare GUID, not `api://…`. |
+| `AADSTS70008` when redeeming a code by hand | Codes issued to a single-page application live about 60 seconds. Only affects manual testing. |
+
+---
 
 ## The CLI
 
-`semantius-cli` is a second public client against the same API. Register it
-(the script does), and pass its client id to the CLI on the machine that runs
-it — nothing in this stack reads it, and no stack variable carries it. It is
-written into `.env` as a comment for reference only. A future `.well-known`
-endpoint is meant to hand it out; until then it is a value you copy.
+`semantius-cli` is the third registration: a public client against the same API.
+Pass its client id to the CLI on the machine that runs it — nothing in this
+stack reads it, so the script records it in `.env` as a comment for reference.
 
-Its tokens carry the same `sub` as the SPA's, so a person signing in through the
-CLI lands on the same user row with the same roles.
+Its tokens carry the same subject as the web app's, so signing in through the
+CLI lands on the same user record with the same roles.

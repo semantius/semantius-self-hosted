@@ -91,7 +91,7 @@
 
 	# PostgREST, and there are TWO ways in. THIS one is direct: the prefix is
 	# stripped and the request reaches the API with whatever `Authorization` the
-	# caller sent, or none. It is the admin SPA's path (VITE_API_BASE_URL=/rest)
+	# caller sent, or none. It is the web app's path (VITE_API_BASE_URL=/rest)
 	# and the one to curl a bearer token against.
 	#
 	# The other is /gateway/rest above — the idp's authenticating proxy in front of

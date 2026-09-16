@@ -20,7 +20,7 @@
 {
   "clients": [
     {
-      // The admin SPA — the `web` service, served at the front door's root. A
+      // The web app — the `web` service, served at the front door's root. A
       // public client: no secret, PKCE S256 required.
       //
       // The id must match VITE_OAUTH_CLIENT_ID on the `web` service; both

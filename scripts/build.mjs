@@ -485,8 +485,8 @@ function build(variant) {
     const block = [
       "# =============================================================================",
       `# Set these before the stack will start. \`docker compose up\` refuses to run`,
-      "# while any of them is empty — see entra/README.md for one worked example, and",
-      "# the repository README for what any issuer has to provide.",
+      "# while any of them is empty. README.md in this folder says what each one is",
+      "# and where to get it.",
       "# =============================================================================",
       ...required.map((v) => `${v}=`),
       "",

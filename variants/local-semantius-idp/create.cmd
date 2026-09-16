@@ -50,13 +50,13 @@ if "%PULL%"=="0" if defined DB_VERSION (
   exit /b 1
 )
 
-REM Not a plain copy: setup-env.cmd generates a unique IDP_SECRET and unique
-REM database passwords into the new .env, so a first run is never left holding
-REM the dev secrets .env.example ships. All three have to be right BEFORE first
-REM boot -- see the header of setup-env.cmd.
-if not exist ".env" (
-  call "%~dp0setup-env.cmd" || goto :err
-)
+REM CONFIGURATION IS NOT THIS SCRIPT'S JOB. It runs docker; setup-env.cmd writes
+REM .env. Creating one here would mean a command called "create the containers"
+REM quietly deciding your passwords -- and, in a variant configured against an
+REM external identity provider or database, producing a file that still lacks
+REM every value that matters. check-env.ps1 refuses both cases by name.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\check-env.ps1"
+if errorlevel 1 exit /b 1
 
 if "%ASSUME_YES%"=="1" set "FORCE=1"
 if "%CI%"=="true" set "FORCE=1"

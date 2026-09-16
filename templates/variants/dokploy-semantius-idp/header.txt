@@ -1,10 +1,10 @@
  The Semantius stack: PostgreSQL with the pg_semantius extension, a PostgREST
- HTTP API, its OpenAPI docs, the admin SPA, and a bundled OIDC/OAuth identity
+ HTTP API, its OpenAPI docs, the web app, and a bundled OIDC/OAuth identity
  provider — all behind one Caddy front door.
 
  ROUTING. Attach your domain to the `semantius` service on port 80 — it is the
  only way in, and it fans out internally:
-   /              the admin SPA          /idp/*         the identity provider
+   /              the web app            /idp/*         the identity provider
    /rest/*        the API                /.well-known/* its discovery documents
    /api-docs/*    the API docs           /gateway/*     the API, via the idp's
                                                         authenticating proxy

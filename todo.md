@@ -51,7 +51,7 @@ that change is implemented and verified (see [README.md](README.md)).
 
 ## Unrelated observation
 
-- [ ] After OIDC login the admin SPA shows **"You don't have access to any
+- [ ] After OIDC login the web app shows **"You don't have access to any
       modules"** for `user1`. Not a routing problem — `/api/modules` returns 200
       through the front door, and `/rpc/get_userinfo` reports a role on module 1.
       Looks like RBAC/data state or an app-side query; worth a look separately.
