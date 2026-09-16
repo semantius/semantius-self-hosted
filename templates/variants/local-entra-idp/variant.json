@@ -11,8 +11,8 @@
   "defaults": {
     "JWKS_URL": "",
     "DOCS_API_ROUTE": "/rest",
-    "PGRST_JWT_ROLE_CLAIM_KEY": ".role",
+    "PGRST_JWT_ROLE_CLAIM_KEY": ".roles[0]",
     "VITE_BACKEND_TYPE": "custom",
-    "VITE_UI_CUSTOMIZER": ""
+    "VITE_UI_CUSTOMIZER": "{\"user\":{\"menu\":[{\"title\":\"Microsoft account\",\"url\":\"https://myaccount.microsoft.com/\",\"target\":\"newtab\"}]}}"
   }
 }

@@ -16,7 +16,7 @@
 #
 # Usage:
 #   ./build.sh                 build every variant
-#   ./build.sh external-idp    build one
+#   ./build.sh local-entra-idp    build one
 #
 # The transform and its validations live in scripts/build.mjs; this is
 # just the entry point.

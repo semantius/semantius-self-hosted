@@ -15,7 +15,7 @@ REM rebuild never touches it.
 REM
 REM Usage:
 REM   build.cmd                 build every variant
-REM   build.cmd external-idp    build one
+REM   build.cmd local-entra-idp    build one
 REM
 REM The transform and its validations live in .\scripts\build.mjs; this
 REM is just the entry point.

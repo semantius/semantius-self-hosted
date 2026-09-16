@@ -9,7 +9,7 @@
  *   docker-compose.yml            the complete stack
  *   Caddyfile                     the front-door routes
  *   .env.example                  every variable, described once
- *   idp-config/*.jsonc            the identity provider's configuration
+ *   semantius-idp-config/*.jsonc  the bundled idp's configuration
  *   compose-scripts/              the compose runtime (up, create, setup-env…),
  *                                 copied into every compose variant so the
  *                                 folder stands alone; not used by dokploy
@@ -336,7 +336,7 @@ function build(variant) {
       // Derived, not listed: every `./`-prefixed bind mount on a surviving
       // service becomes an embed group. A file mount is one config; a directory
       // mount is one per file found in it. Nothing here knows what a Caddyfile
-      // or an idp-config is, so a variant that drops either needs no change.
+      // or an semantius-idp-config is, so a variant that drops either needs no change.
       const files = [];
       volumes.items = volumes.items.filter((item) => {
         const v = item.value;
@@ -546,7 +546,7 @@ function build(variant) {
 
     // Whatever the surviving services bind-mount has to exist beside the
     // compose file. Derived from the mounts, so nothing here has to know what
-    // a Caddyfile or an idp-config directory is.
+    // a Caddyfile or an semantius-idp-config directory is.
     for (const svc of Object.values(outServices)) {
       for (const v of svc.volumes ?? []) {
         if (typeof v !== "string" || !v.startsWith("./")) continue;
@@ -637,11 +637,27 @@ function build(variant) {
     written.push(entry);
   }
 
+  // Anything in the output this build did not produce: either the operator's
+  // (their .env, a compose override) or a LEFTOVER from a source that has since
+  // been renamed or removed — which a committed output would otherwise keep
+  // forever, because a build only clears the paths it writes. Reported, never
+  // deleted: guessing wrong here costs somebody their .env.
+  const produced = new Set([
+    ...written,
+    ...COMPOSE_SCRIPTS.map((rel) => rel.split("/")[0]),   // `written` counts these, not names them
+  ]);
+  const strays = readdirSync(OUT_DIR).filter(
+    (e) => !produced.has(e) && !e.startsWith(".env") && !e.startsWith("docker-compose.override"),
+  );
+
   const summary = platform === "dokploy"
     ? `stripped ${strippedPorts.length} ports:, ${strippedNames.length} container_name:, ${strippedReadOnly} read_only:, embedded ${embedded.length} files`
     : `${removedServices.length ? `removed ${removedServices.join(", ")}` : "complete stack"}`;
   console.log(`variants/${variant}/  (${platform}: ${summary})`);
   console.log(`  ${written.join(", ")}`);
+  if (strays.length) {
+    console.log(`  NOT produced by this build — yours, or stale: ${strays.join(", ")}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

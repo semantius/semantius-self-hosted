@@ -20,7 +20,7 @@ that change is implemented and verified (see [README.md](README.md)).
       - Traefik routes `${main_domain}` → `caddy`:80,
       - `/`, `/rest/`, `/gateway/rest/`, `/api-docs/` all work at `https://<domain>`,
       - the identity provider works end to end: `/idp` serves the setup page, its
-        two embedded `idp-config/*.jsonc` configs arrive with their `${env:…}`
+        two embedded `semantius-idp-config/*.jsonc` configs arrive with their `${env:…}`
         placeholders intact, `/.well-known/openid-configuration` (and the RFC 8414
         suffix form `/.well-known/oauth-authorization-server/idp`) resolve, and a
         login through the SPA completes.

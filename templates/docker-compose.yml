@@ -145,7 +145,7 @@ services:
   # test issuer.
   #
   # MOUNTED AT /idp on the Caddy front door (see ../Caddyfile), and the prefix is
-  # NOT stripped: `server.baseUrl` in idp-config/config.jsonc carries it, and every
+  # NOT stripped: `server.baseUrl` in semantius-idp-config/config.jsonc carries it, and every
   # link, cookie Path, e-mail URL and redirect the idp emits derives from that one
   # value. Its discovery documents are ALSO served from the ORIGIN ROOT
   # (/.well-known/*), because a client handed the issuer <origin>/idp looks for
@@ -160,7 +160,7 @@ services:
   #                       the cleanup job hold SESSION advisory locks, which a
   #                       transaction pooler does not preserve.
   #
-  # CONFIG is the sibling ./idp-config/ (config.jsonc + oauth_clients.jsonc), bind
+  # CONFIG is the sibling ./semantius-idp-config/ (config.jsonc + oauth_clients.jsonc), bind
   # mounted READ-ONLY: the container never writes its own configuration, so
   # "restart to apply" is a property of the mount rather than a promise in the
   # documentation. The `${env:...}` placeholders inside those files resolve from
@@ -237,7 +237,7 @@ services:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@pgbouncer:5432/${POSTGRES_DB:-semantius}
       DATABASE_URL_ADMIN: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-semantius}
       # ORIGIN of the admin SPA — no path, no trailing slash.
-      # idp-config/oauth_clients.jsonc builds the SPA's redirect URIs from it, and
+      # semantius-idp-config/oauth_clients.jsonc builds the SPA's redirect URIs from it, and
       # those are matched EXACTLY, so it has to be the origin the browser really uses.
       # It MAY carry the idp's `{host}` template (PUBLIC_WEB_ORIGIN=https://{host}),
       # which the idp expands per request to the host the browser is on — that is
@@ -261,12 +261,12 @@ services:
       # creates the accounts; set it for anything people depend on.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
     volumes:
-      # Regular directory, read-only. Edit ./idp-config/*.jsonc and
+      # Regular directory, read-only. Edit ./semantius-idp-config/*.jsonc and
       # `docker compose restart idp` — configuration is read ONCE at start-up;
       # there is no hot reload and SIGHUP is ignored. The dokploy build embeds
       # these files as `configs:` instead (no bind mounts there), so regenerate
       # after every change to keep the two in sync.
-      - ./idp-config:/config:ro
+      - ./semantius-idp-config:/config:ro
     # No host port: every URL the idp emits carries the front door's origin +
     # /idp, so it is only ever correct to reach it through the front door on WEB_PORT.
     # Nothing writes to the image. The one writable path it needs holds scratch,
@@ -400,7 +400,7 @@ services:
       PGRST_JWT_SECRET: "@/jwks/jwks.json"
       # The JWT `role` claim selects the DB role (default claim key = .role). The
       # bundled idp mints "role":"authenticated" into every access token (a static
-      # claim — `jwt.claims` in idp-config/config.jsonc), so it maps automatically;
+      # claim — `jwt.claims` in semantius-idp-config/config.jsonc), so it maps automatically;
       # an external issuer has to be configured to emit the same claim.
       #
       # A VARIABLE because some issuers cannot emit a claim called `role` at all.
@@ -574,7 +574,7 @@ services:
       # `invalid_target: requested resource not authorized` — a "Login Error" on
       # the callback page and nothing in the SPA to explain it. So name the idp's
       # registered default audience: the FIXED URI semantius://api (`jwt.audience`
-      # in idp-config/config.jsonc, same default). Fixed and host-independent on
+      # in semantius-idp-config/config.jsonc, same default). Fixed and host-independent on
       # purpose — an audience derived from the issuer goes stale the moment a
       # domain is attached after deploy, and an unregistered audience is exactly
       # that bare "Login Error". Override BOTH sides together via

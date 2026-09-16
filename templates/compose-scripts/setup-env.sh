@@ -29,9 +29,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# An EXISTING .env is repaired, not replaced: every value the operator put there
+# survives, and only the generated secrets below are looked at. A secret counts
+# as needing one when it is missing, empty, or still the value .env.example
+# ships — the last case is what catches the `cp .env.example .env` that leaves a
+# stack running on a published password.
+REPAIR=0
 if [ -f .env ]; then
-  echo ".env already exists — leaving it untouched."
-  exit 0
+  REPAIR=1
 fi
 
 [ -f .env.example ] || { echo "setup-env: .env.example is missing." >&2; exit 1; }
@@ -65,59 +70,90 @@ gen_secret() {
 pg_password="$(gen_urlsafe)"
 auth_password="$(gen_urlsafe)"
 
-# What gets generated, as two parallel lists: the sed substitutions applied to
-# .env.example, and the keys checked afterwards. A variant build that drops a
-# feature cuts its entries out of both, so nothing is generated for a variable
-# that variant's .env.example does not have.
-SED_ARGS=(
-  -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${pg_password}|"
-  -e "s|^SEMANTIUS_AUTHENTICATOR_PASSWORD=.*|SEMANTIUS_AUTHENTICATOR_PASSWORD=${auth_password}|"
+# ONE list of `KEY=value` entries, so a key can never drift apart from the value
+# generated for it. A variant build cuts a feature's entries out of it, and
+# nothing is then generated, checked or reported for a variable that variant's
+# .env.example does not have.
+GENERATED=(
+  "POSTGRES_PASSWORD=${pg_password}"
+  "SEMANTIUS_AUTHENTICATOR_PASSWORD=${auth_password}"
 )
-GENERATED_KEYS="POSTGRES_PASSWORD SEMANTIUS_AUTHENTICATOR_PASSWORD"
-GENERATED_VALUES=("$pg_password" "$auth_password")
 
 # >>> feature:bundled-idp
-idp_secret="$(gen_secret)"
-SED_ARGS+=(-e "s|^IDP_SECRET=.*|IDP_SECRET=${idp_secret}|")
-GENERATED_KEYS="IDP_SECRET ${GENERATED_KEYS}"
-GENERATED_VALUES+=("$idp_secret")
+GENERATED+=("IDP_SECRET=$(gen_secret)")
 # <<< feature:bundled-idp
 
 # 32 chars is well short of what either generator produces; this only catches a
 # box with neither openssl nor a readable /dev/urandom, where a SHORT or EMPTY
 # secret would otherwise be written out and silently accepted.
-for v in "${GENERATED_VALUES[@]}"; do
-  if [ "${#v}" -lt 32 ]; then
+for entry in "${GENERATED[@]}"; do
+  if [ "${#entry}" -lt 40 ]; then
     echo "setup-env: could not generate a secret (no openssl, no usable /dev/urandom)." >&2
-    echo "Install openssl, or copy .env.example to .env and set the three secrets by hand." >&2
+    echo "Install openssl, or copy .env.example to .env and set the secrets by hand." >&2
     exit 1
   fi
 done
 
 # Written to a temp file and moved into place, so an interrupted run cannot leave
 # a half-substituted .env behind — which would boot with a dev secret still in it.
-# `|` as the sed delimiter: absent from both the hex and the base64 alphabet, as
-# is `&` (which would otherwise expand to the match in the replacement).
 tmp="$(mktemp .env.tmp.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 
-sed "${SED_ARGS[@]}" .env.example > "$tmp"
+if [ "$REPAIR" = 1 ]; then cp .env "$tmp"; else cp .env.example "$tmp"; fi
 
-# The substitutions are silent when a key is absent (a renamed variable, an
-# .env.example edited to comment one out), which would ship a stack with no
-# secret where the reader assumes a generated one. Fail instead.
-for key in $GENERATED_KEYS; do
-  if ! grep -qE "^${key}=.+" "$tmp"; then
-    echo "setup-env: .env.example has no uncommented ${key}= line — nothing was generated for it." >&2
-    exit 1
+# `|` as the sed delimiter: absent from both the hex and the base64 alphabet, as
+# is `&`, which would otherwise expand to the match in the replacement.
+written=""
+for entry in "${GENERATED[@]}"; do
+  key="${entry%%=*}"
+  value="${entry#*=}"
+
+  if [ "$REPAIR" = 1 ]; then
+    current="$(grep -E "^${key}=" "$tmp" | tail -1 | cut -d= -f2- | tr -d '')"
+    shipped="$(grep -E "^${key}=" .env.example | tail -1 | cut -d= -f2- | tr -d '')"
+    # Yours already, and not the value .env.example publishes — leave it alone.
+    if [ -n "$current" ] && [ "$current" != "$shipped" ]; then
+      continue
+    fi
   fi
+
+  if grep -qE "^${key}=" "$tmp"; then
+    sed -e "s|^${key}=.*|${key}=${value}|" "$tmp" > "$tmp.new" && mv "$tmp.new" "$tmp"
+  else
+    # Absent entirely (a hand-trimmed .env): append rather than silently skip.
+    printf '%s
+' "${key}=${value}" >> "$tmp"
+  fi
+  written="$written ${key}"
 done
+
+if [ "$REPAIR" = 1 ] && [ -z "$written" ]; then
+  echo ".env already holds a real value for every generated secret — nothing to do."
+  exit 0
+fi
+
+# The substitutions are silent when a key is absent from a FRESH copy, which
+# would ship a stack with no secret where the reader assumes a generated one.
+if [ "$REPAIR" != 1 ]; then
+  for entry in "${GENERATED[@]}"; do
+    key="${entry%%=*}"
+    if ! grep -qE "^${key}=.+" "$tmp"; then
+      echo "setup-env: nothing was generated for ${key}." >&2
+      exit 1
+    fi
+  done
+fi
 
 mv "$tmp" .env
 trap - EXIT
 chmod 600 .env 2>/dev/null || true
 
-echo "Created .env from .env.example, with freshly generated secrets for"
-echo "  ${GENERATED_KEYS// /, }."
+if [ "$REPAIR" = 1 ]; then
+  echo "Repaired .env — generated a fresh value for:${written}"
+  echo "Everything else in the file was left exactly as it was."
+else
+  echo "Created .env from .env.example, with freshly generated secrets for"
+  echo " ${written}."
+fi
 echo "They are in .env (gitignored) — that is the only copy. Read the DBA password with:"
 echo "  grep '^POSTGRES_PASSWORD=' .env"

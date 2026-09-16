@@ -48,12 +48,34 @@ if [ "$PULL" = 0 ] && [ -n "$DB_VERSION" ]; then
   exit 1
 fi
 
-# Not a plain copy: setup-env.sh generates a unique IDP_SECRET and unique
-# database passwords into the new .env, so a first run is never left holding the
-# dev secrets .env.example ships. All three have to be right BEFORE first boot
-# — see the header of setup-env.sh. It is a no-op when .env already exists.
+# CONFIGURATION IS NOT THIS SCRIPT'S JOB. It runs docker; ./setup-env.sh writes
+# .env. Creating one here would mean a command called "create the containers"
+# quietly deciding your passwords — and, in a variant configured against an
+# external identity provider or database, producing a file that still lacks
+# every value that matters.
 if [ ! -f .env ]; then
-  ./setup-env.sh
+  echo "No .env in $(pwd)." >&2
+  echo >&2
+  echo "  ./setup-env.sh    creates it from .env.example, with generated secrets" >&2
+  echo >&2
+  echo "Then fill in anything the README marks as required, and run this again." >&2
+  exit 1
+fi
+
+# Values this stack cannot start without are written `${VAR:?...}` in the compose
+# file, so they can be read straight out of it — no list to keep in step. Without
+# this, a missing value surfaces as a wall of compose interpolation errors.
+missing=""
+for var in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*:\?' docker-compose.yml | sed 's/^\${//; s/:?$//' | sort -u); do
+  value="$(grep -E "^${var}=" .env | tail -1 | cut -d= -f2- | tr -d '')"
+  if [ -z "$value" ]; then missing="$missing $var"; fi
+done
+if [ -n "$missing" ]; then
+  echo "This stack needs values in .env before it can start:" >&2
+  for var in $missing; do echo "  $var" >&2; done
+  echo >&2
+  echo "See README.md in this folder." >&2
+  exit 1
 fi
 
 # Only prompt when there is actually data to lose. The compose project name is

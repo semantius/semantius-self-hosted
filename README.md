@@ -10,21 +10,27 @@ extension.
 > The stack is written **once**, in [`templates/`](templates/) — with each
 > variant's own extras in [`templates/variants/`](templates/variants/). Every
 > folder under [`variants/`](variants/) is **generated** from them by
-> [`./build.sh`](#building-the-variants), which subtracts the parts a
-> variant does not include:
+> [`./build.sh`](#building-the-variants), which subtracts the parts a variant
+> does not include.
 >
-> | Variant | What it is |
-> |---|---|
-> | [`variants/local/`](variants/local/) | the complete stack, bundled identity provider included — `cd` in and `./create.sh` |
-> | [`variants/external-idp/`](variants/external-idp/) | the same stack **without** an identity provider, for your own OIDC issuer. Includes [an Entra ID guide and setup script](variants/external-idp/entra/) |
-> | [`variants/dokploy/`](variants/dokploy/) | a one-click Dokploy blueprint: one self-contained compose file |
+> Each variant is named **`<platform>-<identity provider>`**, so a name says
+> what it targets and who signs the tokens:
+>
+> | Variant | Platform | Identity provider |
+> |---|---|---|
+> | [`variants/local-semantius-idp/`](variants/local-semantius-idp/) | docker compose, host ports | the bundled `idp` — `cd` in and `./create.sh` |
+> | [`variants/local-entra-idp/`](variants/local-entra-idp/) | docker compose, host ports | Microsoft Entra ID, with a script that registers the apps for you |
+> | [`variants/dokploy-semantius-idp/`](variants/dokploy-semantius-idp/) | Dokploy blueprint, one file | the bundled `idp` |
+>
+> Combinations that don't exist yet — `dokploy-entra-idp`, a build without the
+> database — are a `variant.json` away, not a fork.
 >
 > ```
 > templates/
 > ├── docker-compose.yml   the stack — one file, every variant comes from it
 > ├── Caddyfile
 > ├── .env.example
-> ├── idp-config/
+> ├── semantius-idp-config/
 > ├── compose-scripts/     up, create, stop, setup-env… — the compose RUNTIME,
 > │                        copied into every runnable variant; dokploy has no use
 > │                        for it, being a single self-contained file
@@ -44,7 +50,7 @@ fresh clone of this repo plus Docker is the whole prerequisite list. Everything
 the database needs (extension install, roles, `pg_hba`, the authenticator LOGIN,
 optional demo data) is baked into the `ghcr.io/semantius/postgres` image, so the
 database side mounts nothing from the host. The only host files the stack reads
-are the sibling [`Caddyfile`](templates/Caddyfile) and [`idp-config/`](templates/idp-config/) —
+are the sibling [`Caddyfile`](templates/Caddyfile) and [`semantius-idp-config/`](templates/semantius-idp-config/) —
 deliberately plain, editable files — the ones a runnable variant carries beside
 its compose file. The [Dokploy variant](#dokploy-one-click-template) embeds all
 of them instead, so a one-click deploy really is just one compose file.
@@ -116,14 +122,14 @@ Service names, container names, host ports and what each one actually does:
 
 ```bash
 git clone https://github.com/semantius/semantius-self-hosted
-cd semantius-self-hosted/variants/local
+cd semantius-self-hosted/variants/local-semantius-idp
 ./setup-env.sh         # .env from .env.example, with generated secrets (Windows: setup-env.cmd)
 ./create.sh            # pull the images + a FRESH database, stack up (Windows: create.cmd)
 ```
 
-`variants/local/` is the complete stack, generated and committed — a clone has
+`variants/local-semantius-idp/` is the complete stack, generated and committed — a clone has
 it, no Node and no build step. Running your **own** identity provider instead?
-Use [`variants/external-idp/`](variants/external-idp/), which needs its `.env`
+Use [`variants/local-entra-idp/`](variants/local-entra-idp/), which needs its `.env`
 filled in before it will start at all.
 
 `create` runs `setup-env` for you when `.env` is missing, so the explicit call
@@ -147,7 +153,7 @@ Then, day to day — every command is a script **inside the variant folder**, `.
 for bash and `.cmd` for Windows ([full table below](#management-scripts)):
 
 ```bash
-./up.sh                  # re-apply compose/.env/Caddyfile/idp-config changes  (KEEPS the data)
+./up.sh                  # re-apply compose/.env/Caddyfile/semantius-idp-config changes  (KEEPS the data)
 ./status.sh              # what's running
 ./stop.sh  /  ./start.sh # stop / restart the containers (data kept)
 ./jwks-refresh.sh        # re-fetch the issuer keys after a rotation
@@ -172,7 +178,7 @@ than one command with a flag:
 | | wipes the DB? | use it when |
 |---|---|---|
 | **`create`** | **yes** — `down -v` first, so the image installs itself from scratch | you want a clean database: first run, after changing migrations or init scripts, or to test an image honestly. Prompts when a volume exists (`-y` skips) |
-| **`up`** | no — containers only | you changed `docker-compose.yml`, `.env`, the `Caddyfile` or `idp-config/*.jsonc` and want it applied to the **running data** |
+| **`up`** | no — containers only | you changed `docker-compose.yml`, `.env`, the `Caddyfile` or `semantius-idp-config/*.jsonc` and want it applied to the **running data** |
 
 `create` is the exact inverse of `destroy`; `up` is `docker compose up
 --force-recreate` with the image pull in front of it. Reach for `up` when you
@@ -214,12 +220,12 @@ with `docker compose`, the **container** name with plain `docker`:
 |---|---|---|---|
 | `postgres` | `ghcr.io/semantius/postgres:${SEMANTIUS_DB_VERSION}` (built from [`docker-postgres/`](https://github.com/semantius/semantius/tree/main/docker-postgres)) | **5434** | PG18 with the extension installed + roles/pg_hba/authenticator/nwind baked in |
 | `pgbouncer` | `edoburu/pgbouncer:latest` | **6432** | transaction-pooled `semantius_authenticator` endpoint for apps that talk SQL directly ([see below](#the-pgbouncer-service--a-pooled-endpoint-for-external-apps)) |
-| `idp` | `ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION}` | — | **the bundled OIDC/OAuth issuer**, served at `/idp` — signs the bearer tokens and publishes the JWKS ([see below](#the-idp-service--the-bundled-identity-provider)). Shares `postgres` in its own `idp` schema; configured by [`idp-config/*.jsonc`](templates/idp-config/) |
+| `idp` | `ghcr.io/semantius/semantius-idp:${SEMANTIUS_IDP_VERSION}` | — | **the bundled OIDC/OAuth issuer**, served at `/idp` — signs the bearer tokens and publishes the JWKS ([see below](#the-idp-service--the-bundled-identity-provider)). Shares `postgres` in its own `idp` schema; configured by [`semantius-idp-config/*.jsonc`](templates/semantius-idp-config/) |
 | `jwks-fetch` | `curlimages/curl:latest` | — | **one-shot**: downloads the issuer JWKS to a file PostgREST can read (see below) |
 | `postgrest` | `postgrest/postgrest:latest` | — | HTTP API; verifies the JWT vs the JWKS; serves OpenAPI at `/`. Reach it through `semantius` (`/rest/`, `/gateway/rest/`) |
 | `scalar` | `scalarapi/api-reference:latest` | — | renders PostgREST's Swagger 2.0 spec as browsable docs. Reach it through `semantius` (`/api-docs/`) |
 | `nginx` | `ghcr.io/semantius/semantius-app:${SEMANTIUS_APP_VERSION}` | — | static admin SPA (nginx). **SPA only** — it proxies nothing; reach it through `semantius`. Runtime config is written to `config.js` (`window.__ENV__`) at container start from its `VITE_*` env by the image's `gen-config.sh`, so one image serves every environment — but only the names on that script's canonical list are emitted, so a **new** `VITE_*` setting needs an app image that knows it |
-| `semantius` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`idp-config/config.jsonc`](templates/idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](templates/Caddyfile) — edit it and `docker compose restart semantius` |
+| `semantius` | `caddy:2-alpine` | **3000** | **front door**: `/` → the SPA, `/rest/*` → PostgREST, `/api-docs/*` → Scalar (both prefixes stripped), `/idp/*` and `/.well-known/*` → the idp (prefix **kept**), `/gateway*` → the idp, **rewritten** onto `/idp/gateway` so the caller's URL stays short (safe only because the idp's session cookie is host-wide — see `cookiePath` in [`semantius-idp-config/config.jsonc`](templates/semantius-idp-config/config.jsonc)). `/gateway/rest/*` therefore reaches **the same PostgREST** as `/rest/*`, with the idp's API-key→JWT exchange in front of it — and, because the idp session cookie is host-wide, a signed-in browser authenticates there automatically, which is what makes the Scalar docs' "Test Request" work with no credential to paste. One rule supports that: `@pgrstDocsAccept` collapses the four-content-type `Accept` header Scalar generates down to `application/json`, without which PostgREST answers `406 PGRST116` on every multi-row endpoint. Routes live in the sibling [`Caddyfile`](templates/Caddyfile) — edit it and `docker compose restart semantius` |
 
 The registry images use `:latest` and `pull_policy: always` (re-pulled on every
 `create`); `postgres` is the locally-built image, used as-is. Pin
@@ -258,10 +264,10 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 | `SEMANTIUS_IDP_VERSION` | `latest` | `idp` | Tag of the `semantius-idp` image. Re-pulled on every `create`; pin for reproducible/server deploys. |
 | `IDP_BASE_URL` | `http://localhost:${WEB_PORT}/idp` | `idp` | The **canonical issuer**: scheme + host + the `/idp` mount path, no trailing slash. Every absolute URL the idp emits derives from it — **e-mail links always do**, even with `IDP_DYNAMIC_ISSUER` on. ⚠️ **Set going live** (`https://yourdomain.com/idp`), and update it once after attaching a different domain (for the e-mail links). |
 | `IDP_DYNAMIC_ISSUER` | `false` | `idp` | Derive the issuer (and every browser-facing URL **except e-mail links**) per request from the arriving host. Setting it `true` is *your* assertion about the ingress — see [Serving more than one domain](#serving-more-than-one-domain-idp_dynamic_issuer) below. The Dokploy blueprint sets it. |
-| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`idp-config/oauth_clients.jsonc`](templates/idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
+| `PUBLIC_WEB_ORIGIN` | `http://localhost:${WEB_PORT}` | `idp` | Origin of the admin SPA, no path. [`semantius-idp-config/oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc) builds the SPA's redirect URIs from it, **matched exactly**. With `IDP_DYNAMIC_ISSUER=true` it may be the template `https://{host}` — the idp substitutes the request's whole host (not a wildcard; `*` stays refused). ⚠️ **Set going live.** |
 | `RESEND_API_KEY` | *(unset)* | `idp` | Optional. Without it the idp runs **degraded**: password reset, e-mail verification and all notifications are disabled and hidden. Fine locally (admins create users); set it for anything real. |
 | `VITE_OAUTH_CONFIG` | `/.well-known/openid-configuration` (relative) | `nginx`, `jwks-fetch` | OIDC discovery URL. The admin SPA resolves its OAuth endpoints from it — the relative default is resolved **by the browser**, so discovery follows whatever host the app is open on. `jwks-fetch` derives the JWKS from its `jwks_uri` when `JWKS_URL` is empty; set it (**absolute** — that container curls it directly) only to **replace** the bundled issuer. |
-| `VITE_OAUTH_CLIENT_ID` | `public-client` | `nginx` | Public OAuth client id. Matches the SPA registered in [`idp-config/oauth_clients.jsonc`](templates/idp-config/oauth_clients.jsonc). |
+| `VITE_OAUTH_CLIENT_ID` | `public-client` | `nginx` | Public OAuth client id. Matches the SPA registered in [`semantius-idp-config/oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc). |
 | `VITE_OAUTH_AUDIENCE` | `${IDP_JWT_AUDIENCE}` (`semantius://api`) | `nginx` | The RFC 8707 `resource` the SPA asks its access tokens to be issued for — it becomes their `aud`. **Load-bearing:** the SPA always sends one (falling back to a built-in placeholder when empty) and an issuer that validates resources rejects an unknown one, showing a bare *Login Error* on `/oauth2_callback`. Change it only with an external issuer. |
 | `IDP_JWT_AUDIENCE` | `semantius://api` | `idp`, `nginx` | The audience the bundled idp registers and mints as `aud`, and the default of `VITE_OAUTH_AUDIENCE` — one var moves both sides. A **fixed URI** on purpose: an audience derived from the issuer URL goes stale the moment a domain is attached after deploy. Seeding `_settings.jwt_aud`? Seed exactly this value. |
 | `JWKS_URL` | `http://idp:3000/idp/.well-known/jwks.json` | `jwks-fetch` | Keys PostgREST validates bearer tokens against. Defaults to the bundled idp **in-network** — explicit rather than derived, because the `jwks_uri` the idp advertises carries its *public* URL, which that container can't resolve. Set it **empty** (present in `.env`, no value) to derive from `VITE_OAUTH_CONFIG`'s discovery document instead — what an external issuer wants. The compose uses `${JWKS_URL-…}`, not `${JWKS_URL:-…}`, so an empty value stays empty. |
@@ -285,7 +291,7 @@ The `.env` groups these into a **change-first** block (your OIDC issuer) and a
 > `VITE_OAUTH_*` trio, `IDP_JWT_AUDIENCE` and `JWKS_URL` are host-independent and
 > can be left alone.
 > Using **your own issuer** instead? That is a different variant, not a setting:
-> [`variants/external-idp/`](#external-identity-provider-variantsexternal-idp),
+> [`variants/local-entra-idp/`](#entra-id-variantslocal-entra-idp),
 > where the idp is not generated at all.
 
 ### The three per-installation secrets
@@ -399,7 +405,7 @@ sequenceDiagram
     participant PGRST as PostgREST
 
     SPA->>IDP: authorization_code + PKCE S256
-    Note over IDP: signs an ES256 access token carrying<br/>"role": "authenticated" — a static claim,<br/>jwt.claims in idp-config/config.jsonc
+    Note over IDP: signs an ES256 access token carrying<br/>"role": "authenticated" — a static claim,<br/>jwt.claims in semantius-idp-config/config.jsonc
     IDP-->>SPA: access token
     SPA->>Caddy: GET /rest/* with Authorization Bearer jwt
     Caddy->>PGRST: proxied
@@ -556,13 +562,13 @@ as failing.
 
 ### Configuration
 
-Two commented JSONC files in [`idp-config/`](templates/idp-config/), bind-mounted
+Two commented JSONC files in [`semantius-idp-config/`](templates/semantius-idp-config/), bind-mounted
 **read-only** — the container never writes its own configuration:
 
 | File | Holds |
 |---|---|
-| [`config.jsonc`](templates/idp-config/config.jsonc) | the issuer, the database (pooled + direct), the token shaping, sign-up policy, branding |
-| [`oauth_clients.jsonc`](templates/idp-config/oauth_clients.jsonc) | the OAuth clients — the source of truth, reconciled into the database at every start |
+| [`config.jsonc`](templates/semantius-idp-config/config.jsonc) | the issuer, the database (pooled + direct), the token shaping, sign-up policy, branding |
+| [`oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc) | the OAuth clients — the source of truth, reconciled into the database at every start |
 
 They accept `${env:NAME}` / `${env:NAME:-default}` placeholders, resolved from the
 `idp` service's environment. Configuration is read **once, at start-up**: edit,
@@ -652,7 +658,7 @@ Two more consequences worth knowing, both by design:
 
 ### Adding an OAuth client
 
-Add an entry to [`oauth_clients.jsonc`](templates/idp-config/oauth_clients.jsonc) and
+Add an entry to [`oauth_clients.jsonc`](templates/semantius-idp-config/oauth_clients.jsonc) and
 `docker compose restart idp`. At start-up the file is reconciled into the database
 under an advisory lock: new clients are inserted, changed ones updated, and a
 client **no longer listed is disabled** and its tokens revoked (deleted instead,
@@ -727,7 +733,7 @@ entry in a `roles` array with `PGRST_JWT_ROLE_CLAIM_KEY=.roles[0]`.
 Note that this only re-points the **bundled** stack, which keeps running its idp
 beside the issuer you just configured — two identity systems on one front door,
 and the SPA's account links still lead to the idp's. Use
-[`variants/external-idp/`](#external-identity-provider-variantsexternal-idp)
+[`variants/local-entra-idp/`](#entra-id-variantslocal-entra-idp)
 instead: same stack, generated without the idp.
 
 ## Management scripts
@@ -741,7 +747,7 @@ the variants themselves ([below](#building-the-variants)).
 | Script | Does | `docker compose` |
 |---|---|---|
 | `create` | **from scratch**: wipe the volumes, pull the DB image, (re)create all containers and start them — a **fresh database** (runs `setup-env` when `.env` is missing). Prompts when a volume exists; `-y` skips. A bare argument pins the tag | `down -v` + `up -d --force-recreate --remove-orphans` |
-| `up` | re-pull the image and recreate the **containers**, **keeping the database** — for compose/`.env`/`Caddyfile`/`idp-config` changes. See [`create` vs `up`](#create-vs-up--a-fresh-container-is-not-a-fresh-database) | `up -d --force-recreate --remove-orphans` |
+| `up` | re-pull the image and recreate the **containers**, **keeping the database** — for compose/`.env`/`Caddyfile`/`semantius-idp-config` changes. See [`create` vs `up`](#create-vs-up--a-fresh-container-is-not-a-fresh-database) | `up -d --force-recreate --remove-orphans` |
 | `setup-env` | write `.env` from `.env.example` with a freshly generated `IDP_SECRET` and database passwords. Called by `create`/`up` when `.env` is missing; **never touches an existing `.env`**. See [the three per-installation secrets](#the-three-per-installation-secrets) | — |
 | `start` | start the existing (stopped) containers | `start` |
 | `stop` | stop containers, keep them + volumes | `stop` |
@@ -764,7 +770,7 @@ Everything under `variants/` is generated from `templates/`:
 ```bash
 npm install            # once — the generator's only dependency is `yaml`
 ./build.sh                 # rebuild every variant (Windows: build.cmd)
-./build.sh external-idp    # just one
+./build.sh local-entra-idp    # just one
 ```
 
 The generated folders are **committed**, so a clone can run a variant without
@@ -799,7 +805,7 @@ one stack minus the parts it does not include, and the parts say so themselves:
   pointed at something the variant removed.
 
 Anything else in `templates/variants/<variant>/` is copied into the output verbatim —
-that is how [`entra/`](variants/external-idp/entra/) reaches the external-idp
+that is how [`entra/`](variants/local-entra-idp/) reaches the external-idp
 variant, and how `template.toml` and `meta.json` reach the Dokploy one.
 
 The build then **validates** what it produced: the compose parses, no
@@ -809,13 +815,26 @@ generated `.env.example`, and each embedded file round-trips byte for byte back
 to its source. A typo in a manifest fails the build rather than shipping a
 silently defaulted variant.
 
-## External identity provider (`variants/external-idp/`)
+## Entra ID (`variants/local-entra-idp/`)
 
 The same stack with the `idp` service, its routes, its config and its variables
-removed — for running against Entra ID, Keycloak, Auth0, or anything else that
-speaks OIDC. It **cannot start unconfigured**: the issuer's discovery URL, the
-SPA's client id, the scope and audience its tokens are minted for, and the
-audience this stack requires are all `required` variables.
+removed, and Microsoft Entra ID signing the tokens instead. It **cannot start
+unconfigured**: the tenant's discovery URL, the SPA's client id, the scope and
+audience its tokens are minted for, and the audience this stack requires are all
+`required` variables.
+
+Everything else Entra needs is already in the generated compose, because it is
+identical for every tenant: the `.roles[0]` claim key (Entra cannot emit a claim
+called `role` — both `role` and `roles` are in its restricted set), the empty
+`JWKS_URL` that derives the keys from discovery, the docs on `/rest`, and an
+account menu pointing at Microsoft's My Account. Your `.env` carries only your
+tenant and app ids.
+
+**Another issuer — Okta, Keycloak, Auth0?** Copy
+`templates/variants/local-entra-idp/variant.json`, change the defaults that are
+Entra-specific, and you have a variant for it. Most issuers are *easier*: they
+can emit a literal `"role": "authenticated"` claim, so the claim key stays at
+its default, and their userinfo endpoint accepts their own access tokens.
 
 **What your issuer has to do**
 
@@ -852,17 +871,17 @@ for why a restart rather than a reload.
 
 **Microsoft Entra ID** is worked end to end — registrations, claims, the exact
 `.env`, and the errors you will hit — in
-[`variants/external-idp/entra/README.md`](variants/external-idp/entra/README.md),
+[`variants/local-entra-idp/README.md`](variants/local-entra-idp/README.md),
 with a PowerShell script that creates the three app registrations and writes the
 `.env` for you.
 
 ## Dokploy one-click template
 
-[`variants/dokploy/`](variants/dokploy/) is a **Dokploy blueprint** — the deployment variant of this
+[`variants/dokploy-semantius-idp/`](variants/dokploy-semantius-idp/) is a **Dokploy blueprint** — the deployment variant of this
 same stack, ready to drop into a Dokploy templates gallery.
 
 It is generated from the shared stack plus
-[`templates/variants/dokploy/`](templates/variants/dokploy/) (that variant's own `template.toml`
+[`templates/variants/dokploy-semantius-idp/`](templates/variants/dokploy-semantius-idp/) (that variant's own `template.toml`
 and `meta.json`) — see [Building the variants](#building-the-variants). The
 transform:
 
@@ -870,7 +889,7 @@ transform:
   routes to a service by name;
 - **strips every `container_name:`** — fixed names collide across deployments;
 - **embeds every bind-mounted file** — the `Caddyfile` and each
-  `idp-config/*.jsonc` (discovered, not listed) — in a top-level `configs:` block
+  `semantius-idp-config/*.jsonc` (discovered, not listed) — in a top-level `configs:` block
   with inline `content:`, so the blueprint needs no files beside it
   (`mounts = []` in `template.toml`). `$` is escaped as `$$` there so compose
   leaves Caddy's own `{$SITE_ADDRESS::80}` and the idp's `${env:…}` placeholders
@@ -888,10 +907,10 @@ transform:
 
 | File | What it is |
 |---|---|
-| `variants/dokploy/docker-compose.yml` | the stack, portless, with the Caddyfile and the idp config embedded |
-| `variants/dokploy/template.toml` | copied from `templates/variants/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `semantius`:80 mapping |
-| `variants/dokploy/meta.json` | copied from `templates/variants/dokploy/` — gallery card: id, name, description, logo, links, tags |
-| `variants/dokploy/import.base64.txt` | the compose **and** `template.toml` as one base64 string, to paste into Dokploy's **Import** box — the only path in a stock instance that runs `template.toml` without publishing a gallery |
+| `variants/dokploy-semantius-idp/docker-compose.yml` | the stack, portless, with the Caddyfile and the idp config embedded |
+| `variants/dokploy-semantius-idp/template.toml` | copied from `templates/variants/dokploy-semantius-idp/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `semantius`:80 mapping |
+| `variants/dokploy-semantius-idp/meta.json` | copied from `templates/variants/dokploy-semantius-idp/` — gallery card: id, name, description, logo, links, tags |
+| `variants/dokploy-semantius-idp/import.base64.txt` | the compose **and** `template.toml` as one base64 string, to paste into Dokploy's **Import** box — the only path in a stock instance that runs `template.toml` without publishing a gallery |
 
 The generated env wires the **bundled issuer** to the deployment
 (`IDP_BASE_URL=https://${main_domain}/idp`, a per-deployment `IDP_SECRET`), so a
@@ -914,7 +933,7 @@ database.
   reminder while it is missing from the repo root), then point your instance at
   the fork as a custom templates repo;
 - or, in any instance: **Create Service → Advanced → Import**, and paste the
-  contents of [`variants/dokploy/import.base64.txt`](variants/dokploy/import.base64.txt). Dokploy
+  contents of [`variants/dokploy-semantius-idp/import.base64.txt`](variants/dokploy-semantius-idp/import.base64.txt). Dokploy
   shows you the resolved compose, env, mounts and domains before you hit Deploy.
 
 > **`template.toml` runs on the template paths only.** A compose service whose

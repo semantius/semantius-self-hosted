@@ -14,5 +14,5 @@
  as the user table is empty — whoever completes it is the first administrator.
 
  GENERATED from the repository root (docker-compose.yml + Caddyfile +
- .env.example + idp-config/) by scripts/build.mjs. Edit the sources and
+ .env.example + semantius-idp-config/) by scripts/build.mjs. Edit the sources and
  regenerate; edits here are overwritten by the next build.

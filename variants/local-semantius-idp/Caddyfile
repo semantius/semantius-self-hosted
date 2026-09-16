@@ -78,7 +78,7 @@
 	# (`sessionCredential`, server/gateways/proxy.ts) — so cookie-authenticated
 	# calls would have quietly downgraded instead of failing.
 	#
-	# If `server.cookiePath` is ever narrowed back to /idp in idp-config, this
+	# If `server.cookiePath` is ever narrowed back to /idp in semantius-idp-config, this
 	# block has to go back to being a redirect, or come out.
 	handle /gateway* {
 		rewrite * /idp{uri}

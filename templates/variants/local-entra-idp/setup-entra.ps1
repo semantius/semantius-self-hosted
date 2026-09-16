@@ -1,7 +1,7 @@
 #requires -Version 7
 <#
     Registers this stack with Microsoft Entra ID and writes the result into the
-    sibling .env — the three applications the stack needs, in one run.
+    .env beside it — the three applications the stack needs, in one run.
 
     WHAT IT CREATES (idempotent: every registration is looked up by display name
     before it is created, so a re-run after a failure reuses what exists and
@@ -41,14 +41,14 @@
 param(
     # The origin the browser really uses. The SPA builds its redirect URI as
     # <origin>/oauth2_callback and Entra matches it EXACTLY. Left out, it is
-    # taken from the sibling .env (PUBLIC_WEB_ORIGIN, else WEB_PORT on
+    # taken from the .env beside it (PUBLIC_WEB_ORIGIN, else WEB_PORT on
     # localhost) and you are asked to confirm it — the value is worth a second
     # look, because a redirect URI that does not match the browser's origin
     # fails at sign-in with AADSTS50011 and nowhere earlier.
     [string]$FrontDoorUrl,
     [string]$NamePrefix = 'Semantius',
-    # Defaults to the .env beside this folder — the stack this configures.
-    [string]$EnvFile = (Join-Path $PSScriptRoot '..\.env'),
+    # The .env of the stack this configures — this script sits in it.
+    [string]$EnvFile = (Join-Path $PSScriptRoot '.env'),
     # Print the values instead of writing them.
     [switch]$NoWrite,
     # Fetch a token through the Azure CLI afterwards and print its claims.
@@ -59,7 +59,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 # --- where the browser reaches this stack -----------------------------------
-# Read the sibling .env (or .env.example) for a sensible default, then confirm.
+# Read .env (or .env.example) beside this script for a default, then confirm.
 function Get-EnvValue {
     param([string]$File, [string]$Key)
     if (-not (Test-Path $File)) { return $null }
@@ -282,7 +282,7 @@ Write-Host "[3/3] $cliName" -ForegroundColor Cyan
 $cli = Get-AppByName $cliName
 if (-not $cli) {
     # The three loopback URIs semantius-cli tries, in order. They are restated
-    # here because idp-config/oauth_clients.jsonc — the source of truth for them
+    # here because semantius-idp-config/oauth_clients.jsonc — the source of truth for them
     # — configures the BUNDLED idp and is not part of this variant at all.
     $cli = Invoke-Az ad app create --display-name $cliName --sign-in-audience AzureADMyOrg `
         --is-fallback-public-client true `
@@ -330,24 +330,16 @@ if (-not ($assignments.value | Where-Object { $_.appRoleId -eq $roleId -and $_.r
 # and are not. The first is what the SPA ASKS FOR (the RFC 8707 resource, which
 # must match the scope's prefix or Entra answers AADSTS9010010); the second is
 # what a v2 token actually CARRIES in `aud`, which is the bare GUID.
+# ONLY what is specific to YOUR tenant. Everything else Entra needs — the
+# `.roles[0]` claim key, the empty JWKS_URL, the account menu pointing at
+# Microsoft's My Account — is already baked into this variant's generated
+# compose, because it is the same for every Entra tenant that exists.
 $values = [ordered]@{
     'VITE_OAUTH_CONFIG'        = "https://login.microsoftonline.com/$tenantId/v2.0/.well-known/openid-configuration"
     'VITE_OAUTH_CLIENT_ID'     = $spaAppId
     'VITE_OAUTH_SCOPE'         = "openid profile email offline_access api://$apiAppId/access_as_user"
     'VITE_OAUTH_AUDIENCE'      = "api://$apiAppId"
     'PGRST_JWT_AUD'            = $apiAppId
-    'PGRST_JWT_ROLE_CLAIM_KEY' = '.roles[0]'
-    'JWKS_URL'                 = ''
-    # The user menu. `custom` because the built-in `self_hosted` one links to
-    # /idp/account and /idp/admin, and with an external issuer those pages are
-    # not there. The entry replacing them is Microsoft's My Account portal —
-    # with Entra as the issuer it is the ONLY place a user can change the name
-    # and e-mail this stack shows, because the claims come from there. A new tab
-    # rather than a redirect, so nobody loses what they were doing. There is no
-    # way to discover this URL: OIDC metadata has no field for it, so it is a
-    # constant per issuer rather than something the stack can derive.
-    'VITE_BACKEND_TYPE'        = 'custom'
-    'VITE_UI_CUSTOMIZER'       = '{"user":{"menu":[{"title":"Microsoft account","url":"https://myaccount.microsoft.com/","target":"newtab"}]}}'
 }
 
 Write-Host ""
