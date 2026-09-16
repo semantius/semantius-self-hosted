@@ -53,24 +53,57 @@ subscription.
 
 The script asks for your front door URL (the origin people open in the browser),
 creates the three registrations, pre-authorizes the clients so nobody has to
-click through a consent screen, assigns the app role to *you*, and writes the
-values into `.env`. Re-running it is safe: it looks each registration up by name
-first, and refuses to touch an `.env` that is already configured.
+click through a consent screen, assigns the app role to *you*, requires that
+assignment for every token the API is issued, and writes the values into
+`.env`. Re-running it is safe: it looks each registration up by name first, and
+refuses to touch an `.env` that is already configured.
 
 **By hand**, or if someone else administers the tenant: follow
 [Registering by hand](#registering-by-hand) below. That person can also run
 `./setup-entra.ps1 -NoWrite`, which creates the registrations and *prints* the
 values instead of writing them, for you to paste into `.env`.
 
+**More than one Semantius in the same tenant** — a CRM and an HRM, or
+production and test — gets one set of registrations *each*:
+
+```powershell
+./setup-entra.ps1 -NamePrefix "Semantius CRM"
+./setup-entra.ps1 -NamePrefix "Semantius HRM"
+```
+
+Each prefix is its own API, web app and CLI: its own audience, so a token for
+one host is refused by the other; its own **Users and groups** list; its own
+*Assignment required* switch; its own Conditional Access scope. The enterprise
+application is then called `<prefix> API` wherever this page says *Semantius
+API*. One consequence: `sub` is issued per API, so the same person has a
+different external id on each host, and user references do not survive copying
+data from one host to the other.
+
+Registrations are found by name and reused, so a second host set up with the
+*same* prefix would silently join the first — one audience, tokens valid on
+both, one access list. The script refuses that when the web app already serves
+another origin; `-Shared` overrides it, for replicas of one system that are
+meant to share.
+
 ## 3. Give people access
 
 In the Entra admin center: **Enterprise applications → Semantius API → Users and
 groups** → assign users or groups to the **`authenticated`** app role.
+Assigning *groups* needs an Entra ID P1 licence; assigning users works on the
+free tier.
 
-This is the gate. Someone without that role can sign in to Microsoft perfectly
-well and still reach nothing here, because their token arrives without the role
-claim. A newly assigned user's first token can still miss it — the assignment
-takes about a minute to reach the token service.
+This is the gate, and Entra enforces it: the script turns on **Assignment
+required** for the API's enterprise application (by hand, it is one more
+setting under [The API](#the-api)), so someone without the role is refused at
+Microsoft's sign-in page with `AADSTS50105` and never receives a token for
+this API. A token that arrives without the role anyway — the switch off, an
+old token — is mapped to `anon` and reaches nothing. A newly assigned user's
+first token can still miss the claim; the assignment takes about a minute to
+reach the token service.
+
+Registered before the switch existed? `./setup-entra.ps1 -NoWrite` turns it on
+for an existing registration without touching `.env`, or flip it yourself under
+**Enterprise applications → Semantius API → Properties**.
 
 ## 4. Start it
 
@@ -132,6 +165,11 @@ What the script does, in the Entra admin center.
 - **Token configuration** → add the optional claims **email**, **given_name**
   and **family_name** to the *access* token. The user record is created from
   those; without them it has a name but no e-mail.
+- **Enterprise applications → Semantius API → Properties → Assignment
+  required?** → *Yes*. This is the enterprise application (the service
+  principal), not the registration. Without it every user in the tenant can
+  obtain a token for the API — one without the role claim, which the stack
+  maps to `anon`; with it, Entra refuses the token itself.
 
 ### The web app
 
@@ -179,7 +217,8 @@ timetable rather than yours.
 | `AADSTS9010010` | `VITE_OAUTH_AUDIENCE` and `VITE_OAUTH_SCOPE` name different APIs. Both must point at the same `api://…`. |
 | `AADSTS9002326` at sign-in | The redirect URI is registered as *Web* or *Mobile and desktop* instead of **Single-page application**. |
 | `AADSTS50011` | The redirect URI in Entra does not match the origin people actually open. It is matched exactly, including the port. |
-| Everything is refused; the token has no `roles` | The user is not assigned to the `authenticated` app role — or was assigned less than a minute ago. |
+| `AADSTS50105` at sign-in | The user is not assigned to the `authenticated` app role, and the API requires assignment — the intended refusal. Assign them under **Users and groups**. |
+| Everything is refused; the token has no `roles` | The user was assigned less than a minute ago — or **Assignment required** is off on the API's enterprise application and the user is not assigned at all. |
 | `90002 JWT role claim must be authenticated` | The database image is older than Entra support. Unpin `SEMANTIUS_DB_VERSION`, or pin a newer release. |
 | `90005 JWT audience does not match` | `_settings.jwt_aud` in the database holds a different value than the token's audience — for v2 tokens that is the bare GUID, not `api://…`. |
 | `AADSTS70008` when redeeming a code by hand | Codes issued to a single-page application live about 60 seconds. Only affects manual testing. |

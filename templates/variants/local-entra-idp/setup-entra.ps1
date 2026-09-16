@@ -32,8 +32,23 @@
     ASSIGNING USERS is the one step left to a directory admin: this script
     assigns the app role to the account it runs as, and nobody else. Everyone
     else gets it under Enterprise applications > <prefix> API > Users and
-    groups. A user without it receives a token with no `roles` claim, which
-    PostgREST maps to `anon` — the stack's way of saying "not a user here".
+    groups (assigning GROUPS needs an Entra ID P1 licence; users work on the
+    free tier). The API's enterprise application is set to ASSIGNMENT REQUIRED,
+    so a user without the role is refused by Entra at sign-in (AADSTS50105)
+    and never receives a token for this API. Should one arrive anyway — the
+    switch off, an old token — it carries no `roles` claim, which PostgREST
+    maps to `anon`: the stack's way of saying "not a user here".
+
+    MORE THAN ONE SEMANTIUS in the tenant — a CRM and an HRM, or production
+    and test — gets one set of registrations EACH: give every host its own
+    -NamePrefix ("Semantius CRM"). Each prefix is its own API, App and CLI,
+    so its own audience (a token for one host is refused by the other), its
+    own Users and groups list, its own "Assignment required" switch. Because
+    registrations are found by name and REUSED, a second host run with the
+    SAME prefix would silently join the first: one audience, tokens valid on
+    both, one access list. The script refuses that when the App already
+    serves another origin; -Shared overrides it, for replicas of ONE system
+    that are meant to share.
 
     UNDO: az ad app delete --id <appId>   (once per registration)
 #>
@@ -52,7 +67,12 @@ param(
     # Print the values instead of writing them.
     [switch]$NoWrite,
     # Fetch a token through the Azure CLI afterwards and print its claims.
-    [switch]$ProbeToken
+    [switch]$ProbeToken,
+    # This host is one of SEVERAL served by the same registrations — replicas
+    # of ONE system — so the App may carry other hosts' redirect URIs. Without
+    # it the script refuses to join an App that already serves another origin;
+    # a separate system gets its own -NamePrefix instead.
+    [switch]$Shared
 )
 
 $ErrorActionPreference = 'Stop'
@@ -136,7 +156,7 @@ if (-not $NoWrite -and (Test-Path $EnvFile)) {
     $line = $existing | Where-Object { $_ -match '^\s*VITE_OAUTH_CLIENT_ID\s*=\s*\S' }
     if ($line) {
         Write-Host "$EnvFile is already configured ($($line -join '')) — nothing to do." -ForegroundColor Yellow
-        Write-Host "Run with -NoWrite to print values for a different tenant, or clear that line first." -ForegroundColor Yellow
+        Write-Host "Run with -NoWrite to bring the registrations up to date without touching .env (the values are printed instead), or clear that line first." -ForegroundColor Yellow
         exit 0
     }
 }
@@ -264,6 +284,27 @@ $redirectUri = "$($FrontDoorUrl.TrimEnd('/'))/oauth2_callback"
 # (AADSTS9002326), and that is how the SPA redeems its code. There is no az
 # flag for spa.redirectUris either, so Graph again. Existing URIs are kept.
 $spaCurrent = (Invoke-Az ad app show --id $spaAppId).spa.redirectUris
+
+# ANOTHER HOST'S URIs on this App mean this host would JOIN it: one audience,
+# tokens valid on every host it serves, one access list. Right for replicas of
+# one system, wrong for two systems — so it is refused unless -Shared says it
+# is meant; a separate system gets its own -NamePrefix. Compared by ORIGIN
+# (scheme, host, port), so a re-run for the same host is silent. Nothing new
+# has been created at this point: an App with other URIs means the whole
+# triplet already existed, and step 1 only re-applied settings to it.
+$hostOrigin = ([uri]$FrontDoorUrl).GetLeftPart([UriPartial]::Authority)
+$others = @(@($spaCurrent) | Where-Object { $_ } |
+    ForEach-Object { ([uri]$_).GetLeftPart([UriPartial]::Authority) } |
+    Where-Object { $_ -ne $hostOrigin } | Select-Object -Unique)
+if ($others.Count -gt 0 -and -not $Shared) {
+    throw ("'$spaName' already serves $($others -join ', '). This host would share registrations, " +
+           "tokens and the access list with it. Pass -NamePrefix '<another name>' to keep the hosts " +
+           "separate, or -Shared to join them on purpose.")
+}
+if ($others.Count -gt 0) {
+    Write-Host "  sharing with $($others -join ', ') (-Shared)" -ForegroundColor Yellow
+}
+
 $uris = @($spaCurrent) + $redirectUri | Where-Object { $_ } | Select-Object -Unique
 Invoke-GraphPatch "$GRAPH/applications/$($spa.id)" @{ spa = @{ redirectUris = @($uris) } }
 Write-Host "  SPA redirect URI $redirectUri" -ForegroundColor DarkGray
@@ -323,6 +364,34 @@ if (-not ($assignments.value | Where-Object { $_.appRoleId -eq $roleId -and $_.r
     } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
 } else {
     Write-Host "$($me.userPrincipalName) already holds the 'authenticated' app role" -ForegroundColor DarkGray
+}
+
+# --- close the gate: only assigned users can get a token for the API ---------
+# Without this EVERY user in the tenant can obtain a token for the API; it
+# merely carries no `roles` claim, and the stack maps that to `anon`. With it,
+# Entra refuses the token request itself (AADSTS50105) unless the user, or a
+# group they are in, holds an app role on the API — so unassigned users stop at
+# Microsoft's sign-in page. It lives on the API's SERVICE PRINCIPAL (Enterprise
+# applications > <prefix> API > Properties > "Assignment required?"), not on
+# the registration, and the clients need nothing: the check is made against
+# the resource a token is requested for. AFTER the self-assignment above, so
+# the account running this is inside before the door closes. A refusal to
+# issue, not the stack's only defence — PostgREST and rbac.uid() still map a
+# role-less token to `anon`, so nothing here relaxes.
+if (-not $apiSp.appRoleAssignmentRequired) {
+    try {
+        Invoke-GraphPatch "$GRAPH/servicePrincipals/$($apiSp.id)" @{ appRoleAssignmentRequired = $true }
+        Write-Host "Assignment required: ON for $apiName — only assigned users get a token" -ForegroundColor Cyan
+    } catch {
+        # Not fatal: the stack still works, unassigned users merely reach it as
+        # `anon`. Typically a re-run against a service principal somebody else
+        # created — the creator owns it, and an owner may set this; others may
+        # not.
+        Write-Host "Could not turn on 'Assignment required' for $apiName ($_)." -ForegroundColor Yellow
+        Write-Host "Set it in the Entra admin center: Enterprise applications > $apiName > Properties." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Assignment required already ON for $apiName" -ForegroundColor DarkGray
 }
 
 # --- the values -------------------------------------------------------------
