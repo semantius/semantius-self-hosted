@@ -7,7 +7,7 @@ REM templates\, run this, commit the result.
 REM
 REM A variant subtracts from the one stack in templates\: "x-semantius-feature:"
 REM keys mark compose nodes and "# >>> feature:<name>" pairs mark regions of the
-REM text files, and templates\<variant>\variant.json says which features to drop,
+REM text files, and templates\variants\<variant>\variant.json says which features to drop,
 REM which variables the variant cannot start without, and what its defaults are.
 REM
 REM A generated folder keeps its own .env -- yours, with your passwords -- and a

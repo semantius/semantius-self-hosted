@@ -10,11 +10,12 @@
  *   Caddyfile                     the front-door routes
  *   .env.example                  every variable, described once
  *   idp-config/*.jsonc            the identity provider's configuration
- *   up.sh / create.sh / …         the helper scripts, copied into every
- *                                 runnable variant so a folder stands alone
- *   <variant>/variant.json        that variant's manifest (see below)
- *   <variant>/header.txt          the header its compose file gets
- *   <variant>/<anything else>     copied verbatim into the output
+ *   compose-scripts/              the compose runtime (up, create, setup-env…),
+ *                                 copied into every compose variant so the
+ *                                 folder stands alone; not used by dokploy
+ *   variants/<variant>/variant.json   that variant's manifest (see below)
+ *   variants/<variant>/header.txt     the header its compose file gets
+ *   variants/<variant>/<anything else> copied verbatim into the output
  *
  * variants/ (GENERATED — committed, never hand-edited):
  *   <variant>/…                   a runnable folder, or a deployment blueprint
@@ -23,7 +24,7 @@
  * must never destroy — so a build clears the paths it writes rather than the
  * directory.
  *
- * THE MANIFEST, templates/<variant>/variant.json:
+ * THE MANIFEST, templates/variants/<variant>/variant.json:
  *   platform        "compose"  a plain folder you `docker compose up` in
  *                   "dokploy"  a single-file blueprint for Dokploy's importer
  *   removeFeatures  names matched against `x-semantius-feature:` keys in the
@@ -46,7 +47,7 @@
  * Comments in the source compose are preserved (yaml Document round-trip).
  *
  * Usage (from anywhere):
- *   ./build.sh                 build every variant in templates/
+ *   ./build.sh                 build every variant in templates/variants/
  *   ./build.sh external-idp    build one
  *   node scripts/build.mjs [variant]
  */
@@ -57,17 +58,36 @@ import { isMap, isSeq, parseDocument, Scalar, visit, YAMLMap } from "yaml";
 
 const ROOT = new URL("../", import.meta.url);
 const TEMPLATES_DIR = new URL("templates/", ROOT);
+/** Per-variant inputs: templates/variants/<name>/ builds variants/<name>/. */
+const VARIANT_INPUTS_DIR = new URL("variants/", TEMPLATES_DIR);
 const OUTPUT_DIR = new URL("variants/", ROOT);
-/** A source file you edit: everything under templates/. */
+/** A source file you edit: the shared stack, directly under templates/. */
 const src = (name) => new URL(name, TEMPLATES_DIR);
 
-/** Helper scripts copied into every runnable (compose) variant. */
-const HELPER_SCRIPTS = [
-  "up.sh", "up.cmd", "create.sh", "create.cmd", "start.sh", "start.cmd",
-  "stop.sh", "stop.cmd", "status.sh", "status.cmd", "destroy.sh", "destroy.cmd",
-  "setup-env.sh", "setup-env.cmd", "jwks-refresh.sh", "jwks-refresh.cmd",
-  "scripts/setup-env.ps1",
-];
+/**
+ * The compose RUNTIME: up/create/stop/status/destroy/setup-env/jwks-refresh,
+ * and the .ps1 their Windows wrappers call. They belong to the `compose`
+ * platform rather than to the stack or to any one variant — identical for every
+ * folder you `docker compose up` in, and meaningless to a Dokploy blueprint,
+ * which is a single self-contained file with no scripts beside it.
+ *
+ * The whole directory is copied into every compose variant at the same relative
+ * paths, feature-cut like any other text. Adding one is adding a file here.
+ */
+const COMPOSE_SCRIPTS_DIR = new URL("compose-scripts/", TEMPLATES_DIR);
+
+/** Every file under `dir`, as paths relative to it. */
+function listFiles(dir, prefix = "") {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFiles(new URL(`${entry.name}/`, dir), rel));
+    else out.push(rel);
+  }
+  return out;
+}
+
+const COMPOSE_SCRIPTS = existsSync(COMPOSE_SCRIPTS_DIR) ? listFiles(COMPOSE_SCRIPTS_DIR).sort() : [];
 
 function fail(msg) {
   console.error(`\nbuild FAILED — ${msg}\n`);
@@ -79,10 +99,14 @@ function readText(path) {
   return readFileSync(path, "utf8").replace(/\r\n/g, "\n");
 }
 
-/** Write LF-only UTF-8, creating parent directories. */
+/**
+ * Write UTF-8, creating parent directories. LF everywhere — except `.cmd`,
+ * which cmd.exe wants CRLF, and which .gitattributes pins that way too.
+ */
 function writeText(path, text) {
   mkdirSync(new URL(".", path), { recursive: true });
-  writeFileSync(path, text.replace(/\r\n/g, "\n"));
+  const lf = text.replace(/\r\n/g, "\n");
+  writeFileSync(path, path.pathname.endsWith(".cmd") ? lf.replace(/\n/g, "\r\n") : lf);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,22 +209,22 @@ function rewriteVars(text, required, defaults) {
 // Build one variant
 // ---------------------------------------------------------------------------
 function build(variant) {
-  const VARIANT_DIR = new URL(`${variant}/`, TEMPLATES_DIR);
+  const VARIANT_DIR = new URL(`${variant}/`, VARIANT_INPUTS_DIR);
   const OUT_DIR = new URL(`${variant}/`, OUTPUT_DIR);
   const variantSrc = (name) => new URL(name, VARIANT_DIR);
   const out = (name) => new URL(name, OUT_DIR);
 
-  if (!existsSync(VARIANT_DIR)) fail(`no templates/${variant}/ directory`);
+  if (!existsSync(VARIANT_DIR)) fail(`no templates/variants/${variant}/ directory`);
 
   let manifest;
   try {
     manifest = JSON.parse(readText(variantSrc("variant.json")));
   } catch (e) {
-    fail(`templates/${variant}/variant.json is missing or not valid JSON: ${e.message}`);
+    fail(`templates/variants/${variant}/variant.json is missing or not valid JSON: ${e.message}`);
   }
   const platform = manifest.platform;
   if (platform !== "compose" && platform !== "dokploy") {
-    fail(`templates/${variant}/variant.json: platform must be "compose" or "dokploy", got ${JSON.stringify(platform)}`);
+    fail(`templates/variants/${variant}/variant.json: platform must be "compose" or "dokploy", got ${JSON.stringify(platform)}`);
   }
   const removeFeatures = manifest.removeFeatures ?? [];
   const required = manifest.required ?? [];
@@ -210,7 +234,7 @@ function build(variant) {
   try {
     header = readText(variantSrc("header.txt"));
   } catch {
-    fail(`templates/${variant}/header.txt is missing`);
+    fail(`templates/variants/${variant}/header.txt is missing`);
   }
 
   // --- the compose document ------------------------------------------------
@@ -506,7 +530,7 @@ function build(variant) {
   // still go, because every path written below is cleared first.
   const clear = (rel) => rmSync(out(rel), { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
-  for (const rel of ["docker-compose.yml", ".env.example", "Caddyfile", "import.base64.txt", "logo.svg", ...HELPER_SCRIPTS]) {
+  for (const rel of ["docker-compose.yml", ".env.example", "Caddyfile", "import.base64.txt", "logo.svg", ...COMPOSE_SCRIPTS]) {
     clear(rel);
   }
   for (const entry of readdirSync(VARIANT_DIR)) {
@@ -538,14 +562,16 @@ function build(variant) {
       }
     }
 
-    // The helper scripts, so the folder is runnable on its own. They go through
-    // the same feature cutting as everything else — setup-env generates a
-    // secret per feature, and a variant that dropped one must not ask for it.
-    for (const rel of HELPER_SCRIPTS) {
-      const text = cutFeatureBlocks(readText(src(rel)), removeFeatures, rel);
+    // The compose runtime, so the folder is runnable on its own. Feature-cut
+    // like everything else — setup-env generates a secret per feature, and a
+    // variant that dropped one must not ask for it.
+    for (const rel of COMPOSE_SCRIPTS) {
+      const text = cutFeatureBlocks(
+        readText(new URL(rel, COMPOSE_SCRIPTS_DIR)), removeFeatures, `compose-scripts/${rel}`,
+      );
       writeText(out(rel), text);
     }
-    written.push(`${HELPER_SCRIPTS.length} helper scripts`);
+    written.push(`${COMPOSE_SCRIPTS.length} compose scripts`);
   }
 
   if (platform === "dokploy") {
@@ -558,9 +584,9 @@ function build(variant) {
       metaJsonText = readText(variantSrc("meta.json"));
       metaJson = JSON.parse(metaJsonText);
     } catch (e) {
-      fail(`templates/${variant}: a dokploy variant needs template.toml and meta.json: ${e.message}`);
+      fail(`templates/variants/${variant}: a dokploy variant needs template.toml and meta.json: ${e.message}`);
     }
-    if (!metaJson?.id) fail(`templates/${variant}/meta.json has no "id"`);
+    if (!metaJson?.id) fail(`templates/variants/${variant}/meta.json has no "id"`);
 
     const templateProblems = [];
     const templateEnv = new Set(
@@ -623,18 +649,26 @@ const requested = process.argv[2];
 if (requested && !/^[a-z][a-z0-9-]*$/.test(requested)) {
   fail(`variant name must be a lowercase slug, got: ${requested}`);
 }
-// A variant is any directory under templates/ holding a variant.json — which
-// is what separates them from the shared sources beside them (idp-config/,
-// scripts/).
+if (!existsSync(VARIANT_INPUTS_DIR)) {
+  fail("templates/variants/ does not exist — that is where each variant's variant.json lives");
+}
+
 const variants = requested
   ? [requested]
-  : readdirSync(TEMPLATES_DIR)
-      .filter((d) => existsSync(new URL(`${d}/variant.json`, TEMPLATES_DIR)))
+  : readdirSync(VARIANT_INPUTS_DIR)
+      .filter((d) => existsSync(new URL(`${d}/variant.json`, VARIANT_INPUTS_DIR)))
       .sort();
+
+// Finding nothing is a FAILURE, not an empty success. A moved directory, a
+// renamed manifest or a run from the wrong checkout would otherwise print the
+// closing summary and exit 0, having built nothing at all.
+if (!variants.length) {
+  fail("no variants found in templates/variants/ — each one needs a variant.json");
+}
 
 for (const v of variants) build(v);
 
 console.log("");
-console.log(variants.length > 1 ? `Built ${variants.length} variants into variants/.` : "Built into variants/.");
+console.log(`Built ${variants.length} variant${variants.length === 1 ? "" : "s"} into variants/: ${variants.join(", ")}.`);
 console.log("A compose variant is runnable where it stands: cd into it, ./setup-env.sh, ./up.sh.");
 console.log("A dokploy variant is published as a one-click template — see the README.");

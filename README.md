@@ -7,8 +7,9 @@ extension.
 
 > ## Templates are what you edit. Variants are what you run.
 >
-> The stack is written **once**, in [`templates/`](templates/). Every runnable
-> folder under [`variants/`](variants/) is **generated** from it by
+> The stack is written **once**, in [`templates/`](templates/) — with each
+> variant's own extras in [`templates/variants/`](templates/variants/). Every
+> folder under [`variants/`](variants/) is **generated** from them by
 > [`./build.sh`](#building-the-variants), which subtracts the parts a
 > variant does not include:
 >
@@ -17,6 +18,18 @@ extension.
 > | [`variants/local/`](variants/local/) | the complete stack, bundled identity provider included — `cd` in and `./create.sh` |
 > | [`variants/external-idp/`](variants/external-idp/) | the same stack **without** an identity provider, for your own OIDC issuer. Includes [an Entra ID guide and setup script](variants/external-idp/entra/) |
 > | [`variants/dokploy/`](variants/dokploy/) | a one-click Dokploy blueprint: one self-contained compose file |
+>
+> ```
+> templates/
+> ├── docker-compose.yml   the stack — one file, every variant comes from it
+> ├── Caddyfile
+> ├── .env.example
+> ├── idp-config/
+> ├── compose-scripts/     up, create, stop, setup-env… — the compose RUNTIME,
+> │                        copied into every runnable variant; dokploy has no use
+> │                        for it, being a single self-contained file
+> └── variants/            per-variant inputs: variant.json, header.txt, entra/…
+> ```
 >
 > Never hand-edit a file under `variants/` — the next build overwrites it. The
 > one file there that is yours is `.env`, which a rebuild never touches.
@@ -763,9 +776,9 @@ one stack minus the parts it does not include, and the parts say so themselves:
 | Where | How it is marked |
 |---|---|
 | `templates/docker-compose.yml` | `x-semantius-feature: <name>` on the node. Compose ignores `x-` keys, so the local stack never notices |
-| `Caddyfile`, `.env.example`, the helper scripts, and compose **comments** | `# >>> feature:<name>` … `# <<< feature:<name>` around the region |
+| `Caddyfile`, `.env.example`, `compose-scripts/`, and compose **comments** | `# >>> feature:<name>` … `# <<< feature:<name>` around the region |
 
-`templates/<variant>/variant.json` then says what to drop and what to change:
+`templates/variants/<variant>/variant.json` then says what to drop and what to change:
 
 ```json
 {
@@ -785,7 +798,7 @@ one stack minus the parts it does not include, and the parts say so themselves:
 - **`defaults`** — replacement defaults for variables whose built-in default
   pointed at something the variant removed.
 
-Anything else in `templates/<variant>/` is copied into the output verbatim —
+Anything else in `templates/variants/<variant>/` is copied into the output verbatim —
 that is how [`entra/`](variants/external-idp/entra/) reaches the external-idp
 variant, and how `template.toml` and `meta.json` reach the Dokploy one.
 
@@ -849,7 +862,7 @@ with a PowerShell script that creates the three app registrations and writes the
 same stack, ready to drop into a Dokploy templates gallery.
 
 It is generated from the shared stack plus
-[`templates/dokploy/`](templates/dokploy/) (that variant's own `template.toml`
+[`templates/variants/dokploy/`](templates/variants/dokploy/) (that variant's own `template.toml`
 and `meta.json`) — see [Building the variants](#building-the-variants). The
 transform:
 
@@ -876,8 +889,8 @@ transform:
 | File | What it is |
 |---|---|
 | `variants/dokploy/docker-compose.yml` | the stack, portless, with the Caddyfile and the idp config embedded |
-| `variants/dokploy/template.toml` | copied from `templates/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `semantius`:80 mapping |
-| `variants/dokploy/meta.json` | copied from `templates/dokploy/` — gallery card: id, name, description, logo, links, tags |
+| `variants/dokploy/template.toml` | copied from `templates/variants/dokploy/`: Dokploy variables (`${domain}`, generated passwords, a generated `IDP_SECRET`), the env written to the deployment's `.env`, and the domain → `semantius`:80 mapping |
+| `variants/dokploy/meta.json` | copied from `templates/variants/dokploy/` — gallery card: id, name, description, logo, links, tags |
 | `variants/dokploy/import.base64.txt` | the compose **and** `template.toml` as one base64 string, to paste into Dokploy's **Import** box — the only path in a stock instance that runs `template.toml` without publishing a gallery |
 
 The generated env wires the **bundled issuer** to the deployment
