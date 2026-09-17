@@ -970,13 +970,13 @@ curl -fsS https://yourdomain.com/.well-known/semantius.json | jq .
   "version": 1,
   "host_type": "selfhost",
   "idp_type": "semantius",
-  "idp_well_known": "/.well-known/openid-configuration",
+  "idp_well_known": "https://yourdomain.com/.well-known/openid-configuration",
   "client_id_cli": "semantius-cli",
   "redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
   "scope": "",
   "audience": "semantius://api",
-  "gateway_url": "/gateway/rest",
-  "api_url": "/rest"
+  "gateway_url": "https://yourdomain.com/gateway/rest",
+  "api_url": "https://yourdomain.com/rest"
 }
 ```
 
@@ -985,19 +985,32 @@ curl -fsS https://yourdomain.com/.well-known/semantius.json | jq .
 | `version` | Schema version, `1`. The compatibility marker: a client that does not know a version should refuse rather than guess. |
 | `host_type` | `selfhost` \| `cloud`. Which kind of deployment answered. |
 | `idp_type` | `semantius` \| `entra` \| `custom` \| `cloud`. **Advisory** — see below. |
-| `idp_well_known` | The OIDC discovery URL. The issuer and every endpoint come from fetching it; they are not repeated here. |
+| `idp_well_known` | The OIDC discovery URL, absolute. The issuer and every endpoint come from fetching it; they are not repeated here. An external issuer's URL is published unchanged. |
 | `client_id_cli` | The OAuth client id a command-line tool signs in with. Not the web app's. |
 | `redirect_uris` | The loopback URIs registered for `client_id_cli`. **Required.** |
 | `scope` | The scopes to request. Empty means "whatever discovery advertises". |
 | `audience` | The RFC 8707 resource to request; it becomes the token's `aud`. |
-| `gateway_url` | The idp's authenticating proxy in front of the API. **Absent when the deployment has no bundled idp.** |
-| `api_url` | PostgREST through the front door. |
+| `gateway_url` | The idp's authenticating proxy in front of the API, on this origin. **Absent when the deployment has no bundled idp.** |
+| `api_url` | PostgREST through the front door, on this origin. |
 
-**Relative URLs resolve against the document's own URL** — `new URL(value, documentUrl)`.
-Self-hosted values are relative on purpose, the same reason `VITE_OAUTH_CONFIG`
-is: a domain attached after deploy then needs no edit. Cloud answers absolute
-URLs. `redirect_uris` are the exception and are always absolute — they point at
-the *user's own machine*, not at the deployment.
+**Every URL is absolute**, like every other document under `/.well-known/` — a
+client never has to resolve anything against a base. The deployment still stays
+domain-agnostic, because the origin is derived from the **arriving request**
+rather than configured: attach a domain after deploy and the document follows it
+with no env to edit. Same approach as the idp's
+[`IDP_DYNAMIC_ISSUER`](#serving-more-than-one-domain-idp_dynamic_issuer).
+
+Two values are not derived. `idp_well_known` is published as configured when
+`VITE_OAUTH_CONFIG` is already absolute — an external issuer's URL, which is
+Entra's `login.microsoftonline.com` and belongs to Microsoft, not to this host;
+it is only prefixed with the request origin when it is relative, which is the
+bundled idp's default. And `redirect_uris` are always the loopback addresses
+they say: they point at the *user's own machine*, never at the deployment.
+
+The scheme comes from `X-Forwarded-Proto` when a proxy sends one, and only
+otherwise from the connection Caddy saw — behind Dokploy's Traefik, TLS is
+terminated in front and that connection is plain HTTP, so trusting it alone
+would publish `http://` URLs for an `https://` deployment.
 
 **`idp_type` is advisory.** It names the issuer behind the deployment for logs,
 error messages and support, and **no client may branch on it**. Everything a
@@ -1046,10 +1059,10 @@ are identifiers, not secrets, and are in the SPA bundle too.
 - **selfhost** — as above. `idp_type` is `semantius`, `entra` or `custom`;
   `gateway_url` is present only with the bundled idp. Served by Caddy from the
   front door (see `templates/Caddyfile`), its values coming from the `semantius`
-  service's environment in `docker-compose.yml`.
+  service's environment in `docker-compose.yml` and its origin from the request.
 - **cloud** — `host_type: "cloud"`, `idp_type: "cloud"`, `client_id_cli` from the
-  control plane (the value `get_cli_config` returns today), absolute URLs, and
-  the loopback `redirect_uris` registered for that client.
+  control plane (the value `get_cli_config` returns today), and the loopback
+  `redirect_uris` registered for that client.
 
 
 ## Using the CLI against this stack

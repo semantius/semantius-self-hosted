@@ -67,6 +67,46 @@
 	@pgrstDocsAccept header Accept "application/json, application/vnd.pgrst.object+json*"
 	request_header @pgrstDocsAccept Accept application/json
 
+	# --- the document's own origin -------------------------------------------
+	# /.well-known/semantius.json publishes ABSOLUTE urls, like every other
+	# document under /.well-known/ (OIDC discovery, RFC 8414, RFC 9728) — a client
+	# should not have to resolve them against anything. They are derived from the
+	# ARRIVING REQUEST rather than configured, so the deployment stays
+	# domain-agnostic: attach a domain after deploy and the document follows it,
+	# with no env to edit. Same approach as the idp's IDP_DYNAMIC_ISSUER.
+	#
+	# The scheme MUST come from X-Forwarded-Proto when there is one.
+	# {http.request.scheme} describes the hop that reached THIS Caddy, and under
+	# Dokploy/Traefik that hop is plain HTTP because TLS is terminated in front —
+	# so using it alone publishes http:// urls for an https:// deployment. Caddy
+	# does not fold X-Forwarded-Proto into that placeholder (not even for a
+	# trusted_proxies peer), hence this map.
+	#
+	# The host comes from the request's own Host (via hostport, so local dev keeps
+	# its :3000) and NOT from X-Forwarded-Host: Traefik forwards the original Host
+	# anyway, and reading one forwarded header instead of two keeps the trusted
+	# surface smaller.
+	map {http.request.header.X-Forwarded-Proto} {pscheme} {
+		~^(.+)$  "${1}"
+		default  "{http.request.scheme}"
+	}
+
+	# VITE_OAUTH_CONFIG may be either form: RELATIVE for the bundled idp (the
+	# default, so it follows the host) or ABSOLUTE for an external issuer, which
+	# is Entra's own login.microsoftonline.com url and must be published
+	# untouched. So prefix it only when it is not already absolute.
+	#
+	# Two Caddy details this shape exists to dodge: the env value cannot be the
+	# `map` SOURCE directly, because a leading `/` is consumed as a path matcher
+	# ("missing destination argument(s)" at startup) — hence `vars` first; and a
+	# regex branch expands ${1} capture groups but NOT placeholders, so the
+	# passthrough has to capture the value rather than name the variable again.
+	vars idp_wk_raw "{$VITE_OAUTH_CONFIG}"
+	map {vars.idp_wk_raw} {idp_wk} {
+		~^(https?://.*)$  "${1}"
+		default           "{pscheme}://{http.request.hostport}{vars.idp_wk_raw}"
+	}
+
 	# --- platform discovery: /.well-known/semantius.json ----------------------
 	#
 	# ONE document that tells semantius-cli everything it needs to sign in and
@@ -92,6 +132,9 @@
 	# that is only in .env renders as "" and the document lies QUIETLY. Add a
 	# field here and its variable there in the same edit.
 	#
+	# `redirect_uris` stays absolute-as-written: those point at the USER's own
+	# machine, not at this deployment, so they are never derived from the request.
+	#
 	# `redirect_uris` is a LITERAL, and must match what is actually registered
 	# for the client: semantius-idp-config/oauth_clients.jsonc for the bundled
 	# idp, setup-entra.ps1 for the Entra variant. Change them there, change them
@@ -107,15 +150,15 @@
 	"version": 1,
 	"host_type": "selfhost",
 	"idp_type": "{$SEMANTIUS_IDP_TYPE}",
-	"idp_well_known": "{$VITE_OAUTH_CONFIG}",
+	"idp_well_known": "{idp_wk}",
 	"client_id_cli": "{$CLI_OAUTH_CLIENT_ID}",
 	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
 	"scope": "{$VITE_OAUTH_SCOPE}",
 	"audience": "{$VITE_OAUTH_AUDIENCE}",
 	# >>> feature:bundled-idp
-	"gateway_url": "/gateway/rest",
+	"gateway_url": "{pscheme}://{http.request.hostport}/gateway/rest",
 	# <<< feature:bundled-idp
-	"api_url": "/rest"
+	"api_url": "{pscheme}://{http.request.hostport}/rest"
 }
 ` 200
 	}
