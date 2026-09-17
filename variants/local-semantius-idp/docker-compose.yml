@@ -638,6 +638,9 @@ services:
   #   /idp/*         -> idp:3000        (prefix KEPT — it is part of the issuer URL)
   #   /.well-known/* -> idp:3000        (rewritten under /idp: the issuer's metadata
   #                                      has to live at the origin root)
+  #   /.well-known/semantius.json       (served from HERE, not proxied: the platform
+  #                                      discovery document semantius-cli configures
+  #                                      itself from)
   # No depends_on: Caddy re-resolves upstream DNS per request, so an upstream that
   # hasn't started yet is a brief 502 that self-heals — no start-order coupling.
   semantius:
@@ -656,6 +659,31 @@ services:
       # the edge. The Dokploy template sets Docker's address pools so Traefik
       # is trusted and per-user throttling works there.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
+      # --- the /.well-known/semantius.json document -------------------------
+      # Caddy substitutes these into the `respond` body in ./Caddyfile, and it
+      # reads them from its OWN process environment — .env alone does not reach
+      # it, which is why every field of that document needs a line HERE.
+      #
+      # Which issuer is behind this deployment: semantius | entra | custom.
+      # ADVISORY — it is published for logs and support messages and no client
+      # may branch on it. A per-variant default, so a bundled stack repointed at
+      # a foreign issuer (README: "Using a different issuer") keeps saying
+      # `semantius` until you set this to `custom` by hand.
+      SEMANTIUS_IDP_TYPE: ${SEMANTIUS_IDP_TYPE:-semantius}
+      # The CLI's own OAuth client — NOT the SPA's. A public client with the
+      # loopback redirect URIs listed in the Caddyfile: registered for the
+      # bundled idp in semantius-idp-config/oauth_clients.jsonc, and created by
+      # setup-entra.ps1 in the Entra variant (where it has no default and the
+      # stack refuses to start without it).
+      CLI_OAUTH_CLIENT_ID: ${CLI_OAUTH_CLIENT_ID:-semantius-cli}
+      # The SAME issuer, scope and audience the SPA gets — deliberately the same
+      # three variables rather than CLI-specific twins, because a second set is
+      # a second thing to keep in sync. Defaults copied EXACTLY from the `web`
+      # service above, `-` vs `:-` included: an explicitly empty
+      # VITE_OAUTH_AUDIENCE has to stay empty.
+      VITE_OAUTH_CONFIG: ${VITE_OAUTH_CONFIG:-/.well-known/openid-configuration}
+      VITE_OAUTH_SCOPE: ${VITE_OAUTH_SCOPE:-}
+      VITE_OAUTH_AUDIENCE: ${VITE_OAUTH_AUDIENCE-${IDP_JWT_AUDIENCE:-semantius://api}}
     ports:
       - "${WEB_PORT:-3000}:80"
     volumes:

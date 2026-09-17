@@ -597,6 +597,9 @@ services:
   #   /idp/*         -> idp:3000        (prefix KEPT — it is part of the issuer URL)
   #   /.well-known/* -> idp:3000        (rewritten under /idp: the issuer's metadata
   #                                      has to live at the origin root)
+  #   /.well-known/semantius.json       (served from HERE, not proxied: the platform
+  #                                      discovery document semantius-cli configures
+  #                                      itself from)
   # No depends_on: Caddy re-resolves upstream DNS per request, so an upstream that
   # hasn't started yet is a brief 502 that self-heals — no start-order coupling.
   semantius:
@@ -614,6 +617,31 @@ services:
       # the edge. The Dokploy template sets Docker's address pools so Traefik
       # is trusted and per-user throttling works there.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32}
+      # --- the /.well-known/semantius.json document -------------------------
+      # Caddy substitutes these into the `respond` body in ./Caddyfile, and it
+      # reads them from its OWN process environment — .env alone does not reach
+      # it, which is why every field of that document needs a line HERE.
+      #
+      # Which issuer is behind this deployment: semantius | entra | custom.
+      # ADVISORY — it is published for logs and support messages and no client
+      # may branch on it. A per-variant default, so a bundled stack repointed at
+      # a foreign issuer (README: "Using a different issuer") keeps saying
+      # `semantius` until you set this to `custom` by hand.
+      SEMANTIUS_IDP_TYPE: ${SEMANTIUS_IDP_TYPE:-semantius}
+      # The CLI's own OAuth client — NOT the SPA's. A public client with the
+      # loopback redirect URIs listed in the Caddyfile: registered for the
+      # bundled idp in semantius-idp-config/oauth_clients.jsonc, and created by
+      # setup-entra.ps1 in the Entra variant (where it has no default and the
+      # stack refuses to start without it).
+      CLI_OAUTH_CLIENT_ID: ${CLI_OAUTH_CLIENT_ID:-semantius-cli}
+      # The SAME issuer, scope and audience the SPA gets — deliberately the same
+      # three variables rather than CLI-specific twins, because a second set is
+      # a second thing to keep in sync. Defaults copied EXACTLY from the `web`
+      # service above, `-` vs `:-` included: an explicitly empty
+      # VITE_OAUTH_AUDIENCE has to stay empty.
+      VITE_OAUTH_CONFIG: ${VITE_OAUTH_CONFIG:-/.well-known/openid-configuration}
+      VITE_OAUTH_SCOPE: ${VITE_OAUTH_SCOPE:-}
+      VITE_OAUTH_AUDIENCE: ${VITE_OAUTH_AUDIENCE-${IDP_JWT_AUDIENCE:-semantius://api}}
     volumes:
       # Certificate/ACME store + autosaved config — only meaningful when
       # SITE_ADDRESS is a real domain (auto-HTTPS); harmless otherwise.
@@ -1133,6 +1161,57 @@ configs:
       	# a single row.
       	@pgrstDocsAccept header Accept "application/json, application/vnd.pgrst.object+json*"
       	request_header @pgrstDocsAccept Accept application/json
+
+      	# --- platform discovery: /.well-known/semantius.json ----------------------
+      	#
+      	# ONE document that tells semantius-cli everything it needs to sign in and
+      	# call the API: the OIDC discovery URL, the CLI's client id, the loopback
+      	# URIs that client id has registered, the API scope and the audience. Plain
+      	# OIDC discovery cannot carry the last two — see README.md.
+      	#
+      	# OUTSIDE the bundled-idp markers ON PURPOSE. Everything else under
+      	# /.well-known/ below belongs to the idp and is cut with it; this route has
+      	# to survive in the Entra variant, which is exactly where a CLI cannot
+      	# guess. Caddy sorts `handle` blocks by matcher specificity, so this exact
+      	# path wins over the general /.well-known/* proxy regardless of the order
+      	# here.
+      	#
+      	# The body is a BACKTICK-quoted string: `{$$VAR}` is substituted by the
+      	# Caddyfile lexer, and the JSON's own braces survive to the response because
+      	# `respond` replaces only placeholders it recognises and leaves the rest
+      	# verbatim. Caddy sets Content-Type: application/json itself — it sniffs the
+      	# leading brace — and this route answers any method, not only GET.
+      	#
+      	# Every {$$VAR} comes from the caddy service's `environment:` in
+      	# ../docker-compose.yml. Caddy reads its OWN process environment, so a value
+      	# that is only in .env renders as "" and the document lies QUIETLY. Add a
+      	# field here and its variable there in the same edit.
+      	#
+      	# `redirect_uris` is a LITERAL, and must match what is actually registered
+      	# for the client: semantius-idp-config/oauth_clients.jsonc for the bundled
+      	# idp, setup-entra.ps1 for the Entra variant. Change them there, change them
+      	# here. (The bundled idp ignores the PORT for a loopback IP per RFC 8252
+      	# §7.3, so the list is descriptive for it; Entra matches the port and there
+      	# it is binding.)
+      	#
+      	# api_url STAYS LAST: gateway_url above it is cut line-by-line in the Entra
+      	# variant, and a surviving field after it is what keeps the JSON
+      	# comma-correct. Do not reorder those two.
+      	handle /.well-known/semantius.json {
+      		respond `{
+      	"version": 1,
+      	"host_type": "selfhost",
+      	"idp_type": "{$$SEMANTIUS_IDP_TYPE}",
+      	"idp_well_known": "{$$VITE_OAUTH_CONFIG}",
+      	"client_id_cli": "{$$CLI_OAUTH_CLIENT_ID}",
+      	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+      	"scope": "{$$VITE_OAUTH_SCOPE}",
+      	"audience": "{$$VITE_OAUTH_AUDIENCE}",
+      	"gateway_url": "/gateway/rest",
+      	"api_url": "/rest"
+      }
+      ` 200
+      	}
 
       	# /gateway/<name> is the idp's authenticating reverse proxy. It lives at
       	# /idp/gateway upstream, like the rest of the app; this serves it at the

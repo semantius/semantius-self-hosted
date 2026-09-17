@@ -6,9 +6,11 @@
     "VITE_OAUTH_CLIENT_ID",
     "VITE_OAUTH_AUDIENCE",
     "VITE_OAUTH_SCOPE",
-    "PGRST_JWT_AUD"
+    "PGRST_JWT_AUD",
+    "CLI_OAUTH_CLIENT_ID"
   ],
   "defaults": {
+    "SEMANTIUS_IDP_TYPE": "entra",
     "JWKS_URL": "",
     "DOCS_API_ROUTE": "/rest",
     "PGRST_JWT_ROLE_CLAIM_KEY": ".roles[0]",

@@ -725,7 +725,14 @@ set in `.env`:
 - `VITE_OAUTH_AUDIENCE` — the API audience it expects (its issuer URL, if it has
   no separate one);
 - `JWKS_URL=` — **empty**, so `jwks-fetch` derives the keys from that discovery
-  document.
+  document;
+- `SEMANTIUS_IDP_TYPE=custom` and `CLI_OAUTH_CLIENT_ID` — what the stack
+  *publishes about itself* at
+  [`/.well-known/semantius.json`](#well-knownsemantiusjson--platform-discovery).
+  Nothing derives either one, so left alone the document keeps announcing the
+  bundled idp: `semantius`, and a `semantius-cli` client id that does not exist
+  at your issuer. Register a public client there whose redirect URIs are
+  `http://127.0.0.1:53682/callback`, `:53683` and `:53684`, and name it here.
 
 Your issuer must mint a role claim saying `authenticated` — as `"role"`, or as an
 entry in a `roles` array with `PGRST_JWT_ROLE_CLAIM_KEY=.roles[0]`.
@@ -832,7 +839,8 @@ tenant and app ids.
 
 **Another issuer — Okta, Keycloak, Auth0?** Copy
 `templates/variants/local-entra-idp/variant.json`, change the defaults that are
-Entra-specific, and you have a variant for it. Most issuers are *easier*: they
+Entra-specific — `SEMANTIUS_IDP_TYPE` among them, to `custom` — and you have a
+variant for it. Most issuers are *easier*: they
 can emit a literal `"role": "authenticated"` claim, so the claim key stays at
 its default, and their userinfo endpoint accepts their own access tokens.
 
@@ -946,7 +954,110 @@ database.
 
 The target server needs **docker compose ≥ 2.23.1** (inline `configs.content`).
 
+## `/.well-known/semantius.json` — platform discovery
+
+Every Semantius deployment answers one document at a fixed path, and it is how
+`semantius-cli` configures itself: you give it the origin you would type in a
+browser, it fetches this, and it has everything it needs to run an
+authorization-code + PKCE sign-in and call the API. Nothing is passed by hand.
+
+```bash
+curl -fsS https://yourdomain.com/.well-known/semantius.json | jq .
+```
+
+```json
+{
+  "version": 1,
+  "host_type": "selfhost",
+  "idp_type": "semantius",
+  "idp_well_known": "/.well-known/openid-configuration",
+  "client_id_cli": "semantius-cli",
+  "redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+  "scope": "",
+  "audience": "semantius://api",
+  "gateway_url": "/gateway/rest",
+  "api_url": "/rest"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `version` | Schema version, `1`. The compatibility marker: a client that does not know a version should refuse rather than guess. |
+| `host_type` | `selfhost` \| `cloud`. Which kind of deployment answered. |
+| `idp_type` | `semantius` \| `entra` \| `custom` \| `cloud`. **Advisory** — see below. |
+| `idp_well_known` | The OIDC discovery URL. The issuer and every endpoint come from fetching it; they are not repeated here. |
+| `client_id_cli` | The OAuth client id a command-line tool signs in with. Not the web app's. |
+| `redirect_uris` | The loopback URIs registered for `client_id_cli`. **Required.** |
+| `scope` | The scopes to request. Empty means "whatever discovery advertises". |
+| `audience` | The RFC 8707 resource to request; it becomes the token's `aud`. |
+| `gateway_url` | The idp's authenticating proxy in front of the API. **Absent when the deployment has no bundled idp.** |
+| `api_url` | PostgREST through the front door. |
+
+**Relative URLs resolve against the document's own URL** — `new URL(value, documentUrl)`.
+Self-hosted values are relative on purpose, the same reason `VITE_OAUTH_CONFIG`
+is: a domain attached after deploy then needs no edit. Cloud answers absolute
+URLs. `redirect_uris` are the exception and are always absolute — they point at
+the *user's own machine*, not at the deployment.
+
+**`idp_type` is advisory.** It names the issuer behind the deployment for logs,
+error messages and support, and **no client may branch on it**. Everything a
+flow actually needs is in the other fields: `idp_well_known` gives the endpoints,
+and `scope` and `audience` give the two values plain OIDC discovery cannot. This
+is deliberate — the value is a per-deployment setting rather than something
+derived from the running configuration, so a stack repointed at a foreign issuer
+keeps claiming `semantius` until an operator sets `SEMANTIUS_IDP_TYPE=custom`
+(see [Using a different issuer](#using-a-different-issuer)). Treating it as
+advisory is what keeps that a cosmetic wart rather than a broken login.
+
+**`redirect_uris` is required of every host type**, and has to match what is
+really registered for `client_id_cli`. In authorization-code + PKCE the IdP sends
+the *browser* back to a URL the client nominated; a CLI has no web server, so per
+RFC 8252 it starts a throwaway listener on loopback, catches the code there and
+shuts down. An IdP only ever redirects to a pre-registered URI — exact match, no
+wildcards — which is what stops anyone who knows a public client id from having
+codes delivered to their own server. So the client id alone is not enough, and
+the three ports are listed in order of preference: the CLI falls to the next when
+one is already taken.
+
+**Prefer this document over the RFC 9728 hop.** `/.well-known/oauth-protected-resource`
+is still served (`oauth.protectedResource` in `semantius-idp-config/config.jsonc`)
+and remains the entry point for MCP clients. For the CLI this document replaces
+it — one request instead of two, and it carries the scope and audience that hop
+cannot.
+
+**The document is public and unauthenticated, and that is fine.** Every value in
+it is already public: the SPA ships the same client id, scope and audience in its
+JavaScript bundle, and discovery documents are public by definition. Worth saying
+because on the Entra variant it publishes your tenant id and API app id — which
+are identifiers, not secrets, and are in the SPA bundle too.
+
+> **Upgrading an already-running stack: recreate the front door, do not restart
+> it.** The Caddyfile is a bind mount, so `docker compose restart semantius`
+> picks up the new route — but the values it interpolates come from the
+> container's **environment**, which is fixed at creation, and a restarted
+> container still has the old one. The document then answers with every field
+> empty, which is worse than a 404 because it parses. Use
+> `docker compose up -d semantius`, which recreates it. (`./up.sh` does this for
+> you.) Before the upgrade the path falls through to the SPA and returns HTML,
+> so a client sees `Content-Type: text/html` rather than a broken document.
+
+### What each host type answers
+
+- **selfhost** — as above. `idp_type` is `semantius`, `entra` or `custom`;
+  `gateway_url` is present only with the bundled idp. Served by Caddy from the
+  front door (see `templates/Caddyfile`), its values coming from the `semantius`
+  service's environment in `docker-compose.yml`.
+- **cloud** — `host_type: "cloud"`, `idp_type: "cloud"`, `client_id_cli` from the
+  control plane (the value `get_cli_config` returns today), absolute URLs, and
+  the loopback `redirect_uris` registered for that client.
+
+
 ## Using the CLI against this stack
+
+Point it at the front door and it reads
+[`/.well-known/semantius.json`](#well-knownsemantiusjson--platform-discovery) for
+the issuer, its own client id, the scope and the audience. The Postgres profile
+below is the other way in — straight to the database, for migrations.
 
 The Semantius CLI lives in
 [semantius/semantius](https://github.com/semantius/semantius); that repo ships an

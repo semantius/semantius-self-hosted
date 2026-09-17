@@ -82,10 +82,19 @@ if [ -n "$DB_VERSION" ]; then
   echo "Pinning SEMANTIUS_DB_VERSION=${DB_VERSION} for this run."
 fi
 
+# Read ONE value out of .env. NOT `. ./.env`: .env is a compose file, not a
+# shell script, and a value with spaces or braces is not shell syntax. The
+# external-idp variant has both as a matter of course — VITE_OAUTH_SCOPE is
+# `openid profile email offline_access api://…/access_as_user` and
+# VITE_UI_CUSTOMIZER is a JSON menu — so sourcing it made bash try to run
+# `profile` as a command and, under `set -e`, kill this script with exit 127
+# AFTER the stack was already up: a create/up that had in fact worked then
+# reported failure and printed no summary. grep reads it the way compose does.
+envval() { { grep -E "^$1=" .env 2>/dev/null || true; } | tail -1 | cut -d= -f2- | tr -d '\r'; }
+
 # The tag we are about to run, resolved the same way compose resolves it
 # (shell env > .env > the `:-latest` default) — for the messages below only.
-# Captured NOW because the summary at the end re-sources .env.
-env_tag="$(grep -E '^SEMANTIUS_DB_VERSION=' .env 2>/dev/null | tail -1 | cut -d '=' -f2- | tr -d '\r' || true)"
+env_tag="$(envval SEMANTIUS_DB_VERSION)"
 IMAGE_TAG="${SEMANTIUS_DB_VERSION:-${env_tag:-latest}}"
 
 if [ "$PULL" = 1 ]; then
@@ -106,17 +115,19 @@ fi
 docker compose up -d --force-recreate --remove-orphans
 docker compose ps
 
-set -a; . ./.env; set +a
+web_port="$(envval WEB_PORT)"
+postgres_port="$(envval POSTGRES_PORT)"
+authenticator_password="$(envval SEMANTIUS_AUTHENTICATOR_PASSWORD)"
 echo
 echo "Ready (Semantius stack)."
 echo "  Image : ghcr.io/semantius/postgres:${IMAGE_TAG}  ($([ "$PULL" = 1 ] && echo pulled || echo 'local tag, not pulled'))"
-echo "  Admin : http://localhost:${WEB_PORT:-3000}/   (SPA; API at /rest/, docs at /api-docs/)"
-echo "  DBA   : postgresql://postgres:<POSTGRES_PASSWORD>@localhost:${POSTGRES_PORT:-5434}/semantius"
+echo "  Admin : http://localhost:${web_port:-3000}/   (SPA; API at /rest/, docs at /api-docs/)"
+echo "  DBA   : postgresql://postgres:<POSTGRES_PASSWORD>@localhost:${postgres_port:-5434}/semantius"
 
 # The idp warns about its own shipped defaults (IDP_SECRET, POSTGRES_PASSWORD)
 # on its admin pages, but SEMANTIUS_AUTHENTICATOR_PASSWORD never reaches it —
 # this is the only place that can notice it.
-if [ "${SEMANTIUS_AUTHENTICATOR_PASSWORD:-devpassword}" = "devpassword" ]; then
+if [ "${authenticator_password:-devpassword}" = "devpassword" ]; then
   echo
   echo "  WARNING: SEMANTIUS_AUTHENTICATOR_PASSWORD is still the shipped default"
   echo "  ('devpassword') — the login PostgREST uses against the database. Fine"

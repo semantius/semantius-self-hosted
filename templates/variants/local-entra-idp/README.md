@@ -129,9 +129,11 @@ administrator grants them more, under Administration → Users.
 | `VITE_OAUTH_SCOPE` | `openid profile email offline_access api://<API client id>/access_as_user` |
 | `VITE_OAUTH_AUDIENCE` | `api://<API client id>` — what the app *asks* tokens to be issued for |
 | `PGRST_JWT_AUD` | `<API client id>` — what a token actually *carries*, and what the API requires |
+| `CLI_OAUTH_CLIENT_ID` | the **CLI** registration's Application (client) ID — *not* the web app's |
 
-The last two look like one setting and are not. Entra accepts the request form
-(`api://…`) and mints tokens whose audience is the bare GUID.
+`VITE_OAUTH_AUDIENCE` and `PGRST_JWT_AUD` look like one setting and are not.
+Entra accepts the request form (`api://…`) and mints tokens whose audience is
+the bare GUID.
 
 **`PGRST_JWT_AUD` is not optional here.** Entra signs every tenant's tokens with
 the same keys, and nothing in this stack checks which tenant a token came from.
@@ -144,6 +146,31 @@ is the same for every tenant: the `.roles[0]` claim key, the empty `JWKS_URL`
 that derives signing keys from the discovery document, the docs route, and an
 account menu pointing at Microsoft's My Account page — with an external issuer
 that is the only place a user can change their own name and e-mail.
+
+### Upgrading a stack configured before `CLI_OAUTH_CLIENT_ID`
+
+It is **required**, so a `.env` written before it existed will not start: compose
+stops and names the variable. Two ways to fill it in, cheapest first.
+
+1. **Look in your own `.env`.** Earlier versions of `./setup-entra.ps1` appended
+   the value as a comment — `# <prefix> CLI client id: <guid>`. If that line is
+   there, the guid is already yours: rename the line to
+   `CLI_OAUTH_CLIENT_ID=<guid>` and you are done, with no trip to Entra.
+2. **Otherwise ask the tenant**, which is also how you confirm the registration's
+   redirect URIs are current:
+
+   ```powershell
+   ./setup-entra.ps1 -NoWrite
+   ```
+
+   It brings the registrations up to date and **prints** the values without
+   touching `.env` — copy `CLI_OAUTH_CLIENT_ID` from its output. A plain re-run
+   will not do it: the script stops early when `VITE_OAUTH_CLIENT_ID` already has
+   a value, because an `.env` that has it is somebody's working configuration.
+
+Then bring the stack up with `./up.sh` (or `docker compose up -d`), **not**
+`docker compose restart`: the front door's new values live in its container
+environment, which only a recreate replaces.
 
 ---
 
@@ -187,6 +214,11 @@ Then **API permissions** → add the API's `access_as_user` scope.
 applications**, redirect URIs `http://127.0.0.1:53682/callback`, `:53683`,
 `:53684`. Turn **Allow public client flows** on. Same API permission.
 
+All three URIs, not one: Entra matches the port, and the CLI falls to the next
+one when a port is already taken on the user's machine. If you would rather not
+type them, `./setup-entra.ps1` sets them on an existing registration too — see
+[The CLI](#the-cli).
+
 ### Skip the consent screen
 
 On the API registration: **Expose an API → Add a client application**, and add
@@ -228,8 +260,25 @@ timetable rather than yours.
 ## The CLI
 
 `semantius-cli` is the third registration: a public client against the same API.
-Pass its client id to the CLI on the machine that runs it — nothing in this
-stack reads it, so the script records it in `.env` as a comment for reference.
+**It is a required value, not a note.** The stack publishes it at
+`/.well-known/semantius.json`, so the CLI configures itself from the front door's
+URL alone — no client id, scope or audience typed by hand — and
+`CLI_OAUTH_CLIENT_ID` therefore has no default here: compose refuses to start
+until your `.env` has it. `./setup-entra.ps1` writes it like every other value.
+
+**Why it cannot be the web app's client id.** A CLI has no web server to receive
+the authorization code, so it starts a throwaway listener on loopback for the
+length of the sign-in and has the browser redirected there — hence the
+`http://127.0.0.1:53682-53684/callback` redirect URIs, the three it tries in
+order, and **Allow public client flows**. The web app's registration is the
+*single-page application* platform, which Entra refuses to redeem a code for
+outside a browser origin (`AADSTS9002326`).
+
+Entra matches the **port** as well, so all three have to be registered.
+`./setup-entra.ps1` now sets them on every run, not only when it creates the
+registration — so a registration you made by hand, or one predating a change to
+that list, is brought up to date by a plain re-run (and re-running is safe: the
+list is merged, never replaced).
 
 Its tokens carry the same subject as the web app's, so signing in through the
 CLI lands on the same user record with the same roles.

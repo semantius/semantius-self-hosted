@@ -320,19 +320,45 @@ Confirm-ServicePrincipal $spaAppId | Out-Null
 # --- 3. the CLI registration ------------------------------------------------
 $cliName = "$NamePrefix CLI"
 Write-Host "[3/3] $cliName" -ForegroundColor Cyan
+# The three loopback URIs semantius-cli tries, in order — and the value of
+# `redirect_uris` in /.well-known/semantius.json, which the Caddyfile states as
+# a literal. They are restated here because semantius-idp-config/oauth_clients.jsonc
+# — the source of truth for them — configures the BUNDLED idp and is not part of
+# this variant at all. Change them in one place, change them in all three.
+$CliRedirectUris = @(
+    'http://127.0.0.1:53682/callback'
+    'http://127.0.0.1:53683/callback'
+    'http://127.0.0.1:53684/callback'
+)
+
 $cli = Get-AppByName $cliName
 if (-not $cli) {
-    # The three loopback URIs semantius-cli tries, in order. They are restated
-    # here because semantius-idp-config/oauth_clients.jsonc — the source of truth for them
-    # — configures the BUNDLED idp and is not part of this variant at all.
     $cli = Invoke-Az ad app create --display-name $cliName --sign-in-audience AzureADMyOrg `
         --is-fallback-public-client true `
-        --public-client-redirect-uris 'http://127.0.0.1:53682/callback' 'http://127.0.0.1:53683/callback' 'http://127.0.0.1:53684/callback'
+        --public-client-redirect-uris @CliRedirectUris
     Write-Host "  created $($cli.appId)" -ForegroundColor DarkGray
 } else {
     Write-Host "  exists $($cli.appId)" -ForegroundColor DarkGray
 }
 $cliAppId = $cli.appId
+
+# UNCONDITIONALLY, not only on create. Entra has no RFC 8252 §7.3 loopback
+# carve-out — it matches the PORT too — so every address the CLI might bind has
+# to be registered, and until now an app that already existed was left exactly
+# as it was: a registration made by hand from README.md's portal walkthrough, or
+# one predating a change to this list, was never corrected. That is also the
+# -NoWrite recovery path, which is precisely when it matters.
+#
+# `az ad app update` REPLACES the list, so union first — the same way the SPA's
+# redirect URI is merged above — and the re-run stays idempotent.
+$cliCurrent = (Invoke-Az ad app show --id $cliAppId).publicClient.redirectUris
+$cliUris = @(@($cliCurrent) + $CliRedirectUris | Where-Object { $_ } | Select-Object -Unique)
+Invoke-Az ad app update --id $cliAppId --public-client-redirect-uris @cliUris | Out-Null
+# Also create-only until now. Without it Entra refuses the public-client code
+# redemption the CLI does, and an app registered by hand usually lacks it.
+Invoke-Az ad app update --id $cliAppId --is-fallback-public-client true | Out-Null
+Write-Host "  CLI redirect URIs $($CliRedirectUris -join ', ')" -ForegroundColor DarkGray
+
 Confirm-ServicePrincipal $cliAppId | Out-Null
 
 # --- pre-authorization ------------------------------------------------------
@@ -399,6 +425,10 @@ if (-not $apiSp.appRoleAssignmentRequired) {
 # and are not. The first is what the SPA ASKS FOR (the RFC 8707 resource, which
 # must match the scope's prefix or Entra answers AADSTS9010010); the second is
 # what a v2 token actually CARRIES in `aud`, which is the bare GUID.
+# CLI_OAUTH_CLIENT_ID is no longer a comment: the stack PUBLISHES it, at
+# /.well-known/semantius.json, so semantius-cli can configure itself from the
+# origin alone — and the Entra variant cannot start without it.
+#
 # ONLY what is specific to YOUR tenant. Everything else Entra needs — the
 # `.roles[0]` claim key, the empty JWKS_URL, the account menu pointing at
 # Microsoft's My Account — is already baked into this variant's generated
@@ -409,12 +439,12 @@ $values = [ordered]@{
     'VITE_OAUTH_SCOPE'         = "openid profile email offline_access api://$apiAppId/access_as_user"
     'VITE_OAUTH_AUDIENCE'      = "api://$apiAppId"
     'PGRST_JWT_AUD'            = $apiAppId
+    'CLI_OAUTH_CLIENT_ID'      = $cliAppId
 }
 
 Write-Host ""
 Write-Host "--- values ---------------------------------------------------" -ForegroundColor Green
 foreach ($k in $values.Keys) { Write-Host "$k=$($values[$k])" }
-Write-Host "# $NamePrefix CLI client id: $cliAppId   (for semantius-cli on a user's machine)"
 Write-Host "--------------------------------------------------------------" -ForegroundColor Green
 
 if (-not $NoWrite) {
@@ -436,8 +466,6 @@ if (-not $NoWrite) {
         $idx = (0..($lines.Count - 1)) | Where-Object { $lines[$_] -match "^\s*#?\s*$([regex]::Escape($k))\s*=" } | Select-Object -First 1
         if ($null -ne $idx) { $lines[$idx] = $new } else { $lines += $new }
     }
-    $cliNote = "# $NamePrefix CLI client id: $cliAppId"
-    if (-not ($lines | Where-Object { $_ -like "*CLI client id:*" })) { $lines += $cliNote }
     Set-Content -Path $EnvFile -Value $lines -Encoding utf8
     Write-Host "Wrote $EnvFile" -ForegroundColor Green
 }

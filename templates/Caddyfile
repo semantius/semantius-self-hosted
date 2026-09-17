@@ -67,6 +67,59 @@
 	@pgrstDocsAccept header Accept "application/json, application/vnd.pgrst.object+json*"
 	request_header @pgrstDocsAccept Accept application/json
 
+	# --- platform discovery: /.well-known/semantius.json ----------------------
+	#
+	# ONE document that tells semantius-cli everything it needs to sign in and
+	# call the API: the OIDC discovery URL, the CLI's client id, the loopback
+	# URIs that client id has registered, the API scope and the audience. Plain
+	# OIDC discovery cannot carry the last two — see README.md.
+	#
+	# OUTSIDE the bundled-idp markers ON PURPOSE. Everything else under
+	# /.well-known/ below belongs to the idp and is cut with it; this route has
+	# to survive in the Entra variant, which is exactly where a CLI cannot
+	# guess. Caddy sorts `handle` blocks by matcher specificity, so this exact
+	# path wins over the general /.well-known/* proxy regardless of the order
+	# here.
+	#
+	# The body is a BACKTICK-quoted string: `{$VAR}` is substituted by the
+	# Caddyfile lexer, and the JSON's own braces survive to the response because
+	# `respond` replaces only placeholders it recognises and leaves the rest
+	# verbatim. Caddy sets Content-Type: application/json itself — it sniffs the
+	# leading brace — and this route answers any method, not only GET.
+	#
+	# Every {$VAR} comes from the caddy service's `environment:` in
+	# ../docker-compose.yml. Caddy reads its OWN process environment, so a value
+	# that is only in .env renders as "" and the document lies QUIETLY. Add a
+	# field here and its variable there in the same edit.
+	#
+	# `redirect_uris` is a LITERAL, and must match what is actually registered
+	# for the client: semantius-idp-config/oauth_clients.jsonc for the bundled
+	# idp, setup-entra.ps1 for the Entra variant. Change them there, change them
+	# here. (The bundled idp ignores the PORT for a loopback IP per RFC 8252
+	# §7.3, so the list is descriptive for it; Entra matches the port and there
+	# it is binding.)
+	#
+	# api_url STAYS LAST: gateway_url above it is cut line-by-line in the Entra
+	# variant, and a surviving field after it is what keeps the JSON
+	# comma-correct. Do not reorder those two.
+	handle /.well-known/semantius.json {
+		respond `{
+	"version": 1,
+	"host_type": "selfhost",
+	"idp_type": "{$SEMANTIUS_IDP_TYPE}",
+	"idp_well_known": "{$VITE_OAUTH_CONFIG}",
+	"client_id_cli": "{$CLI_OAUTH_CLIENT_ID}",
+	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+	"scope": "{$VITE_OAUTH_SCOPE}",
+	"audience": "{$VITE_OAUTH_AUDIENCE}",
+	# >>> feature:bundled-idp
+	"gateway_url": "/gateway/rest",
+	# <<< feature:bundled-idp
+	"api_url": "/rest"
+}
+` 200
+	}
+
 	# >>> feature:bundled-idp
 	# /gateway/<name> is the idp's authenticating reverse proxy. It lives at
 	# /idp/gateway upstream, like the rest of the app; this serves it at the
