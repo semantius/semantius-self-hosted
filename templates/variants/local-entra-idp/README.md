@@ -58,6 +58,34 @@ assignment for every token the API is issued, and writes the values into
 `.env`. Re-running it is safe: it looks each registration up by name first, and
 refuses to touch an `.env` that is already configured.
 
+## Reading the configuration back
+
+Run it again once the stack is configured and it changes nothing — it prints
+what `.env` points at instead: the three app ids, the audience, the scope and
+app role with their ids, the redirect URIs, who holds the app role, whether the
+assignment gate is on, and a deep link to every page in the Entra admin center
+that owns one of those values.
+
+```powershell
+./setup-entra.ps1            # read it
+./setup-entra.ps1 -Verify    # check it, and exit non-zero if it is wrong
+```
+
+`-Verify` adds a pass/fail line per value and an exit code, so it can gate a
+pipeline. It answers the question a deploy actually has — *is the id in `.env`
+still a real registration* — by looking each one up **by id**, not by name: a
+name lookup would happily find a replacement registration and call that a pass.
+Both modes are read-only, so they are safe against a stack people are using.
+
+Two findings are reported as advisories rather than failures, because neither
+is broken as such: the assignment gate being off (unassigned users can get a
+token, and arrive as `anon`), and the App carrying a second origin (legitimate
+for replicas of one system, but a re-run then needs `-Shared`).
+
+Neither mode is wired into `up`/`create`. They need `az` installed, a live
+login and a round trip to Microsoft — none of which should stand between you
+and starting your own stack.
+
 **By hand**, or if someone else administers the tenant: follow
 [Registering by hand](#registering-by-hand) below. That person can also run
 `./setup-entra.ps1 -NoWrite`, which creates the registrations and *prints* the

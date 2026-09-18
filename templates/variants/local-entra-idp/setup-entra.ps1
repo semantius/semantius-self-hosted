@@ -72,14 +72,22 @@ param(
     # of ONE system — so the App may carry other hosts' redirect URIs. Without
     # it the script refuses to join an App that already serves another origin;
     # a separate system gets its own -NamePrefix instead.
-    [switch]$Shared
+    [switch]$Shared,
+    # READ ONLY: print the configuration, check .env against what is really in
+    # Entra, change nothing, and exit non-zero when the two disagree. Works
+    # whether or not .env is configured — an unconfigured stack is itself a
+    # failure. This is what a configured run prints anyway; the switch adds the
+    # pass/fail column and the exit code, so it can gate a pipeline.
+    [switch]$Verify
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-# --- where the browser reaches this stack -----------------------------------
-# Read .env (or .env.example) beside this script for a default, then confirm.
+# --- reading .env ------------------------------------------------------------
+# Two callers: the front-door default (further down, AFTER the stop condition —
+# see the note there) and the report, which needs to know what this stack is
+# actually pointed at before it can say whether Entra still agrees.
 function Get-EnvValue {
     param([string]$File, [string]$Key)
     if (-not (Test-Path $File)) { return $null }
@@ -88,31 +96,24 @@ function Get-EnvValue {
     return ($line -split '=', 2)[1].Trim().Trim('"').Trim("'")
 }
 
-if (-not $FrontDoorUrl) {
-    $envDir = Split-Path $EnvFile -Parent
-    $suggested = $null
-    foreach ($candidate in @($EnvFile, (Join-Path $envDir '.env.example'))) {
-        $origin = Get-EnvValue $candidate 'PUBLIC_WEB_ORIGIN'
-        if ($origin -and $origin -notmatch '\{host\}') { $suggested = $origin.TrimEnd('/'); break }
-        $port = Get-EnvValue $candidate 'WEB_PORT'
-        if ($port) { $suggested = "http://localhost:$port"; break }
-    }
-    if (-not $suggested) { $suggested = 'http://localhost:3000' }
-
-    Write-Host "The origin the browser uses to reach this stack." -ForegroundColor Cyan
-    Write-Host "The SPA's redirect URI becomes <origin>/oauth2_callback, matched EXACTLY by Entra."
-    $answer = Read-Host "Front door URL [$suggested]"
-    $FrontDoorUrl = if ([string]::IsNullOrWhiteSpace($answer)) { $suggested } else { $answer.Trim() }
-}
-
-if ($FrontDoorUrl -notmatch '^https?://') {
-    throw "FrontDoorUrl must start with http:// or https:// — got '$FrontDoorUrl'"
-}
-
 # The Azure CLI's own public client id — pre-authorized on the scope so
 # -ProbeToken can mint a real token without a browser.
 $AZ_CLI_APP_ID = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
 $GRAPH = 'https://graph.microsoft.com/v1.0'
+
+# The three loopback URIs semantius-cli tries, in order — and the value of
+# `redirect_uris` in /.well-known/semantius.json, which the Caddyfile states as
+# a literal. They are restated here because semantius-idp-config/oauth_clients.jsonc
+# — the source of truth for them — configures the BUNDLED idp and is not part of
+# this variant at all. Change them in one place, change them in all three.
+#
+# Declared UP HERE, not at the point of use, because the report checks them too
+# and the script's own rule is that this list lives in one place.
+$CliRedirectUris = @(
+    'http://127.0.0.1:53682/callback'
+    'http://127.0.0.1:53683/callback'
+    'http://127.0.0.1:53684/callback'
+)
 
 function Invoke-Az {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -146,19 +147,450 @@ function Confirm-ServicePrincipal {
     return (Invoke-Az ad sp create --id $AppId)
 }
 
+# --- lookups that tolerate a missing answer ---------------------------------
+# `Invoke-Az` throws, which is right for the configuring path: a failed write
+# must stop the run. The report needs the opposite — "that app is GONE" is the
+# single most useful thing it can tell you, so a non-zero exit is caught and
+# turned into $null instead of ending the script.
+function Get-AppById {
+    param([string]$AppId)
+    if ([string]::IsNullOrWhiteSpace($AppId)) { return $null }
+    $raw = & az ad app show --id $AppId -o json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return $null }
+    return ($raw | ConvertFrom-Json)
+}
+
+function Get-SpByAppId {
+    param([string]$AppId)
+    if ([string]::IsNullOrWhiteSpace($AppId)) { return $null }
+    $raw = & az ad sp list --filter "appId eq '$AppId'" -o json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return $null }
+    $sp = $raw | ConvertFrom-Json
+    if ($sp -and $sp.Count -gt 0) { return $sp[0] }
+    return $null
+}
+
+# --- the Entra admin center, deep-linked ------------------------------------
+# TENANT-PINNED: the prefix makes a link open in THIS directory whatever the
+# browser signed into last, which is the difference between a link that works
+# for the operator and one that lands them in their own tenant looking at
+# nothing.
+#
+# ONE ANCHOR PER OBJECT, not one per page. Authentication, Token
+# configuration, App roles, Expose an API and Manifest are all a sidebar click
+# from Overview, and the deeper route segments are undocumented portal SPA
+# routes Microsoft renames from time to time — a link that rots to reach a page
+# already in the sidebar is a liability, not a convenience.
+# portal.azure.com serves the same routes if you prefer the old portal.
+function Get-AppLink {
+    param([string]$TenantId, [string]$AppId)
+    "https://entra.microsoft.com/$TenantId/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/$AppId/isMSAApp~/false"
+}
+
+# The tenant-wide registrations list, printed ONLY when an appId in .env
+# resolves to nothing. "What does this tenant actually have, then" is the next
+# question in exactly that case, and it is the only case where a list beats the
+# direct link this report gives you the rest of the time.
+function Get-AppListLink {
+    param([string]$TenantId)
+    "https://entra.microsoft.com/$TenantId/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
+}
+
+# The enterprise application is a DIFFERENT object with a different id, and the
+# one link here that is not a sidebar click away — you reach it via "Managed
+# application in local directory" in the registration's Essentials panel, if
+# you know the relationship exists. Properties is where assignmentRequired
+# lives, which this report advises on; Users and groups is one click from it.
+function Get-SpLink {
+    param([string]$TenantId, [string]$SpObjectId, [string]$AppId)
+    "https://entra.microsoft.com/$TenantId/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Properties/objectId/$SpObjectId/appId/$AppId"
+}
+
+# --- the read-only report ---------------------------------------------------
+# What a CONFIGURED stack gets instead of the two-line "nothing to do" it used
+# to get, and the body of -Verify. Every call it makes is a GET, so it is safe
+# to run against a stack somebody depends on.
+#
+# Registrations are resolved BY THE IDS IN .env, not by display name. The
+# question being answered is "is what .env points at still there", and a name
+# lookup would quietly find a REPLACEMENT registration and call that a pass.
+# The name lookup runs as well, and a disagreement between the two is reported:
+# that is what a re-run under a different -NamePrefix, or a hand-deleted and
+# re-created app, actually looks like from here.
+#
+# Returns the number of FAILED checks (advisories excluded), so -Verify can
+# exit on it.
+function Show-EntraConfig {
+    param([string]$EnvFile, [string]$NamePrefix, [switch]$Verify)
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    # Advisory means "worth knowing, not a reason to fail a pipeline" — the
+    # assignment gate and the assigned-user count, where the right value is a
+    # policy choice rather than a thing that is simply broken.
+    function Add-Check {
+        param([string]$Name, [bool]$Ok, [string]$Detail, [switch]$Advisory)
+        $checks.Add([pscustomobject]@{ Name = $Name; Ok = $Ok; Detail = $Detail; Advisory = [bool]$Advisory })
+    }
+    function Write-Field {
+        param([string]$Name, $Value, [string]$Color = 'Gray')
+        $shown = if ($null -eq $Value -or "$Value" -eq '') { '(empty)' } else { "$Value" }
+        Write-Host ("  {0,-22} {1}" -f $Name, $shown) -ForegroundColor $Color
+    }
+
+    # .env FIRST, and unconditionally: it is printable without a network, so an
+    # offline run still tells you what the stack believes about itself.
+    $keys = @('VITE_OAUTH_CONFIG', 'VITE_OAUTH_CLIENT_ID', 'CLI_OAUTH_CLIENT_ID',
+              'VITE_OAUTH_AUDIENCE', 'PGRST_JWT_AUD', 'PGRST_JWT_ROLE_CLAIM_KEY',
+              'VITE_OAUTH_SCOPE', 'PUBLIC_WEB_ORIGIN', 'WEB_PORT')
+    $e = @{}
+    foreach ($k in $keys) { $e[$k] = Get-EnvValue $EnvFile $k }
+
+    Write-Host ""
+    Write-Host "--- .env ------------------------------------------------------" -ForegroundColor Green
+    Write-Field 'file' $EnvFile
+    foreach ($k in $keys) { Write-Field $k $e[$k] }
+
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "Azure CLI not found — the values above are all this can show." -ForegroundColor Yellow
+        Write-Host "  winget install --exact --id Microsoft.AzureCLI" -ForegroundColor Yellow
+        return $(if ($Verify) { 1 } else { 0 })
+    }
+    $raw = & az account show -o json 2>$null
+    $account = if ($LASTEXITCODE -eq 0 -and $raw) { $raw | ConvertFrom-Json } else { $null }
+    if (-not $account) {
+        Write-Host ""
+        Write-Host "Not signed in — the values above are all this can show." -ForegroundColor Yellow
+        Write-Host "  az login --tenant <tenant> --allow-no-subscriptions" -ForegroundColor Yellow
+        return $(if ($Verify) { 1 } else { 0 })
+    }
+    $tenantId = $account.tenantId
+
+    Write-Host ""
+    Write-Host "--- tenant ----------------------------------------------------" -ForegroundColor Green
+    Write-Field 'tenant' $tenantId
+    Write-Field 'signed in as' $account.user.name
+
+    # The discovery URL carries the tenant the SPA will really talk to, and
+    # docker-compose's jwks-fetch curls it directly to derive the signing keys.
+    # A mismatch with the signed-in tenant means everything below describes a
+    # DIFFERENT directory than the stack uses — checked first, because nothing
+    # after it means much otherwise.
+    if ($e['VITE_OAUTH_CONFIG']) {
+        $m = [regex]::Match($e['VITE_OAUTH_CONFIG'], '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+        $cfgTenant = if ($m.Success) { $m.Value } else { $null }
+        Add-Check 'VITE_OAUTH_CONFIG tenant' ($cfgTenant -eq $tenantId) `
+            $(if ($cfgTenant -eq $tenantId) { 'matches the signed-in tenant' }
+              elseif ($cfgTenant) { "points at $cfgTenant, but you are signed in to $tenantId" }
+              else { 'no tenant guid in the discovery URL' })
+    } else {
+        Add-Check 'VITE_OAUTH_CONFIG' $false 'empty — jwks-fetch derives the signing keys from it and cannot start'
+    }
+
+    # PGRST_JWT_AUD is the API's bare appId; VITE_OAUTH_AUDIENCE is the same id
+    # in api:// form. Either identifies the resource, so fall back rather than
+    # give up when only one is set.
+    $apiId = $e['PGRST_JWT_AUD']
+    if (-not $apiId -and $e['VITE_OAUTH_AUDIENCE']) { $apiId = ($e['VITE_OAUTH_AUDIENCE'] -replace '^api://', '') }
+
+    $api = Get-AppById $apiId
+    $spa = Get-AppById $e['VITE_OAUTH_CLIENT_ID']
+    $cli = Get-AppById $e['CLI_OAUTH_CLIENT_ID']
+
+    # --- the API ------------------------------------------------------------
+    Write-Host ""
+    Write-Host "--- $NamePrefix API  (the resource tokens are issued FOR) -----" -ForegroundColor Green
+    if (-not $api) {
+        Write-Host "  GONE — nothing in this tenant has appId $apiId" -ForegroundColor Red
+        Write-Host "  what this tenant does have: $(Get-AppListLink $tenantId)" -ForegroundColor DarkCyan
+        Add-Check 'PGRST_JWT_AUD' $false "no registration with appId $apiId — deleted, or in another tenant"
+    } else {
+        $scope   = $api.api.oauth2PermissionScopes | Where-Object { $_.value -eq 'access_as_user' } | Select-Object -First 1
+        $role    = $api.appRoles | Where-Object { $_.value -eq 'authenticated' } | Select-Object -First 1
+        $claims  = @($api.optionalClaims.accessToken | ForEach-Object { $_.name })
+        $preAuth = @($api.api.preAuthorizedApplications | ForEach-Object { $_.appId })
+        $apiSp   = Get-SpByAppId $api.appId
+
+        Write-Field 'displayName'    $api.displayName
+        Write-Field 'appId'          $api.appId
+        Write-Field 'objectId'       $api.id
+        Write-Field 'identifierUris' (@($api.identifierUris) -join ', ')
+        Write-Field 'tokenVersion'   $api.api.requestedAccessTokenVersion
+        Write-Field 'signInAudience' $api.signInAudience
+        Write-Field 'scope'          $(if ($scope) { "$($scope.value)  (id $($scope.id), $($scope.type) consent, enabled=$($scope.isEnabled))" } else { $null })
+        Write-Field 'appRole'        $(if ($role) { "$($role.value)  (id $($role.id), $(@($role.allowedMemberTypes) -join '/'), enabled=$($role.isEnabled))" } else { $null })
+        Write-Field 'optionalClaims' ($claims -join ', ')
+        Write-Field 'preAuthorized'  ($preAuth.Count.ToString() + ' client(s)')
+
+        Add-Check 'API registration' $true "$($api.displayName) ($($api.appId))"
+        Add-Check 'API tokenVersion' ($api.api.requestedAccessTokenVersion -eq 2) `
+            $(if ($api.api.requestedAccessTokenVersion -eq 2) { 'v2 — aud is the bare appId, as PGRST_JWT_AUD expects' }
+              else { "v$($api.api.requestedAccessTokenVersion) — aud would be the api:// URI, so PGRST_JWT_AUD can never match" })
+        Add-Check 'API signInAudience' ($api.signInAudience -eq 'AzureADMyOrg') `
+            $(if ($api.signInAudience -eq 'AzureADMyOrg') { 'single tenant — the audience means something' }
+              else { "$($api.signInAudience) — Entra signs every tenant with the same keys, so another tenant could mint this aud" })
+
+        if ($e['VITE_OAUTH_AUDIENCE']) {
+            $ok = @($api.identifierUris) -contains $e['VITE_OAUTH_AUDIENCE']
+            Add-Check 'VITE_OAUTH_AUDIENCE' $ok `
+                $(if ($ok) { "$($e['VITE_OAUTH_AUDIENCE']) is an identifier URI of the API" }
+                  else { "$($e['VITE_OAUTH_AUDIENCE']) is not in $(@($api.identifierUris) -join ', ') — sign-in ends on a bare Login Error" })
+        }
+        if ($e['PGRST_JWT_AUD']) {
+            Add-Check 'PGRST_JWT_AUD' ($e['PGRST_JWT_AUD'] -eq $api.appId) `
+                $(if ($e['PGRST_JWT_AUD'] -eq $api.appId) { 'equals the API appId, which is what lands in aud' }
+                  else { "is $($e['PGRST_JWT_AUD']) but the API appId is $($api.appId) — PostgREST rejects every token" })
+        }
+
+        Add-Check 'scope access_as_user' ([bool]$scope -and $scope.isEnabled) `
+            $(if ($scope -and $scope.isEnabled) { "exposed and enabled (id $($scope.id))" }
+              elseif ($scope) { 'exposed but DISABLED — no token will be issued for it' }
+              else { 'not exposed on the API' })
+        if ($scope -and $e['VITE_OAUTH_SCOPE']) {
+            $want = "api://$($api.appId)/access_as_user"
+            $ok = $e['VITE_OAUTH_SCOPE'] -like "*$want*"
+            Add-Check 'VITE_OAUTH_SCOPE' $ok `
+                $(if ($ok) { "names $want" } else { "does not name $want — Entra may mint a token for something else" })
+        }
+
+        Add-Check "app role 'authenticated'" ([bool]$role -and $role.isEnabled -and (@($role.allowedMemberTypes) -contains 'User')) `
+            $(if (-not $role) { "not defined — every signed-in user maps to anon" }
+              elseif (-not $role.isEnabled) { 'defined but DISABLED' }
+              elseif (-not (@($role.allowedMemberTypes) -contains 'User')) { "allowedMemberTypes is $(@($role.allowedMemberTypes) -join '/'), so users cannot hold it" }
+              else { "enabled, assignable to users (id $($role.id))" })
+        if ($e['PGRST_JWT_ROLE_CLAIM_KEY']) {
+            $ok = $e['PGRST_JWT_ROLE_CLAIM_KEY'] -eq '.roles[0]'
+            Add-Check 'PGRST_JWT_ROLE_CLAIM_KEY' $ok `
+                $(if ($ok) { "reads the roles claim the app role produces" }
+                  else { "is $($e['PGRST_JWT_ROLE_CLAIM_KEY']), not .roles[0] — the app role would be ignored" })
+        }
+
+        Add-Check 'optional claim email' ($claims -contains 'email') `
+            $(if ($claims -contains 'email') { 'present — get_userinfo() can fill the email column' }
+              else { 'missing — user rows are created with a null email' })
+
+        if ($apiSp) {
+            $assigned = $null
+            $rawA = & az rest --method GET --url "$GRAPH/servicePrincipals/$($apiSp.id)/appRoleAssignedTo" -o json 2>$null
+            if ($LASTEXITCODE -eq 0 -and $rawA) { $assigned = ($rawA | ConvertFrom-Json).value }
+            $names = @($assigned | ForEach-Object { "$($_.principalDisplayName) ($($_.principalType))" })
+
+            Write-Field 'assignmentRequired' $(if ($apiSp.appRoleAssignmentRequired) { 'ON' } else { 'OFF' }) `
+                $(if ($apiSp.appRoleAssignmentRequired) { 'Gray' } else { 'Yellow' })
+            Write-Field 'assigned'           $(if ($names.Count) { $names -join ', ' } else { 'nobody' })
+
+            # ADVISORY, both of them: a stack with the gate open is not broken
+            # — PostgREST still maps a role-less token to anon — so this must
+            # not fail a pipeline. It is reported because the script's own
+            # docstring claims the gate is closed, and OFF is how that claim
+            # goes stale without anyone noticing.
+            Add-Check 'assignmentRequired' ([bool]$apiSp.appRoleAssignmentRequired) `
+                $(if ($apiSp.appRoleAssignmentRequired) { 'ON — Entra refuses a token to an unassigned user (AADSTS50105)' }
+                  else { 'OFF — every user in the tenant can get a token for this API; they arrive as anon' }) -Advisory
+            Add-Check 'role assignments' ($names.Count -gt 0) `
+                $(if ($names.Count) { "$($names.Count) principal(s) hold 'authenticated'" } else { "nobody holds 'authenticated' — every sign-in lands as anon" }) -Advisory
+        } else {
+            Add-Check 'API service principal' $false 'no enterprise application — the API cannot be assigned or consented to'
+        }
+
+        Write-Host "  links" -ForegroundColor DarkCyan
+        Write-Host ("    {0,-20} {1}" -f 'overview',       (Get-AppLink $tenantId $api.appId)) -ForegroundColor DarkCyan
+        if ($apiSp) {
+            Write-Host ("    {0,-20} {1}" -f 'enterprise app', (Get-SpLink $tenantId $apiSp.id $api.appId)) -ForegroundColor DarkCyan
+        }
+    }
+
+    # --- the SPA ------------------------------------------------------------
+    Write-Host ""
+    Write-Host "--- $NamePrefix App  (the SPA users sign in to) ---------------" -ForegroundColor Green
+    if (-not $spa) {
+        Write-Host "  GONE — nothing in this tenant has appId $($e['VITE_OAUTH_CLIENT_ID'])" -ForegroundColor Red
+        Write-Host "  what this tenant does have: $(Get-AppListLink $tenantId)" -ForegroundColor DarkCyan
+        Add-Check 'VITE_OAUTH_CLIENT_ID' $false "no registration with appId $($e['VITE_OAUTH_CLIENT_ID']) — deleted, or in another tenant"
+    } else {
+        $spaUris = @($spa.spa.redirectUris)
+        Write-Field 'displayName'      $spa.displayName
+        Write-Field 'appId'            $spa.appId
+        Write-Field 'objectId'         $spa.id
+        Write-Field 'signInAudience'   $spa.signInAudience
+        Write-Field 'spa.redirectUris' ($spaUris -join ', ')
+        foreach ($p in @('web', 'publicClient')) {
+            $other = @($spa.$p.redirectUris)
+            if ($other.Count) { Write-Field "$p.redirectUris" ($other -join ', ') 'Yellow' }
+        }
+
+        Add-Check 'SPA registration' $true "$($spa.displayName) ($($spa.appId))"
+
+        # The origin the browser really uses, from .env — the same precedence
+        # the front-door default uses further down.
+        $origin = $null
+        if ($e['PUBLIC_WEB_ORIGIN'] -and $e['PUBLIC_WEB_ORIGIN'] -notmatch '\{host\}') { $origin = $e['PUBLIC_WEB_ORIGIN'].TrimEnd('/') }
+        elseif ($e['WEB_PORT']) { $origin = "http://localhost:$($e['WEB_PORT'])" }
+        if ($origin) {
+            $want = "$origin/oauth2_callback"
+            $ok = $spaUris -contains $want
+            Add-Check 'SPA redirect URI' $ok `
+                $(if ($ok) { "$want is registered" } else { "$want is NOT registered — sign-in fails with AADSTS50011" })
+
+            # The trap that makes a re-run throw: a second origin on the App
+            # means this host would SHARE registrations with another, and the
+            # guard refuses that without -Shared. Advisory, because sharing is
+            # legitimate for replicas of one system — it just has to be meant.
+            $others = @($spaUris | Where-Object { $_ } |
+                ForEach-Object { ([uri]$_).GetLeftPart([UriPartial]::Authority) } |
+                Where-Object { $_ -ne ([uri]$origin).GetLeftPart([UriPartial]::Authority) } | Select-Object -Unique)
+            if ($others.Count) {
+                Add-Check 'SPA extra origins' $false `
+                    "also serves $($others -join ', ') — a re-run needs -Shared, or another -NamePrefix" -Advisory
+            }
+        }
+
+        # Entra refuses cross-origin token redemption for the web and public
+        # platforms (AADSTS9002326), and that is how the SPA redeems its code.
+        Add-Check 'SPA platform' ($spaUris.Count -gt 0) `
+            $(if ($spaUris.Count) { 'redirect URIs are on the single-page application platform' }
+              else { 'no SPA-platform redirect URIs — code redemption fails with AADSTS9002326' })
+
+        if ($api) {
+            $ok = @($api.api.preAuthorizedApplications | ForEach-Object { $_.appId }) -contains $spa.appId
+            Add-Check 'SPA pre-authorized' $ok `
+                $(if ($ok) { 'on the API scope — no consent screen' } else { 'NOT on the API scope — users meet a consent prompt' })
+        }
+
+        Write-Host "  links" -ForegroundColor DarkCyan
+        Write-Host ("    {0,-20} {1}" -f 'overview',       (Get-AppLink $tenantId $spa.appId)) -ForegroundColor DarkCyan
+    }
+
+    # --- the CLI ------------------------------------------------------------
+    Write-Host ""
+    Write-Host "--- $NamePrefix CLI  (semantius-cli) --------------------------" -ForegroundColor Green
+    if (-not $cli) {
+        Write-Host "  GONE — nothing in this tenant has appId $($e['CLI_OAUTH_CLIENT_ID'])" -ForegroundColor Red
+        Write-Host "  what this tenant does have: $(Get-AppListLink $tenantId)" -ForegroundColor DarkCyan
+        Add-Check 'CLI_OAUTH_CLIENT_ID' $false "no registration with appId $($e['CLI_OAUTH_CLIENT_ID']) — deleted, or in another tenant"
+    } else {
+        $cliUris = @($cli.publicClient.redirectUris)
+        Write-Field 'displayName'  $cli.displayName
+        Write-Field 'appId'        $cli.appId
+        Write-Field 'objectId'     $cli.id
+        Write-Field 'publicClient' ($cliUris -join ', ')
+        Write-Field 'isFallbackPublicClient' $cli.isFallbackPublicClient
+
+        Add-Check 'CLI registration' $true "$($cli.displayName) ($($cli.appId))"
+
+        # Entra has no RFC 8252 7.3 loopback carve-out — it matches the PORT
+        # too — so every address the CLI might bind has to be there.
+        $missing = @($CliRedirectUris | Where-Object { $cliUris -notcontains $_ })
+        Add-Check 'CLI redirect URIs' ($missing.Count -eq 0) `
+            $(if ($missing.Count -eq 0) { "all $($CliRedirectUris.Count) loopback ports registered" }
+              else { "missing $($missing -join ', ') — a login that binds that port fails" })
+        Add-Check 'CLI public client' ([bool]$cli.isFallbackPublicClient) `
+            $(if ($cli.isFallbackPublicClient) { 'isFallbackPublicClient is true' }
+              else { 'isFallbackPublicClient is false — Entra refuses the public-client code redemption' })
+        if ($api) {
+            $ok = @($api.api.preAuthorizedApplications | ForEach-Object { $_.appId }) -contains $cli.appId
+            Add-Check 'CLI pre-authorized' $ok `
+                $(if ($ok) { 'on the API scope — no consent screen' } else { 'NOT on the API scope — the CLI login meets a consent prompt' })
+        }
+
+        Write-Host "  links" -ForegroundColor DarkCyan
+        Write-Host ("    {0,-20} {1}" -f 'overview',       (Get-AppLink $tenantId $cli.appId)) -ForegroundColor DarkCyan
+    }
+
+    # --- does .env agree with the registrations named $NamePrefix? -----------
+    # The one thing an id lookup cannot catch: .env pointing at a perfectly
+    # healthy app that is no longer the one this prefix builds. A second run
+    # with a different -NamePrefix leaves exactly this state.
+    foreach ($pair in @(@{ n = "$NamePrefix API"; got = $api }, @{ n = "$NamePrefix App"; got = $spa }, @{ n = "$NamePrefix CLI"; got = $cli })) {
+        $byName = $null
+        $rawN = & az ad app list --display-name $pair.n --all -o json 2>$null
+        if ($LASTEXITCODE -eq 0 -and $rawN) { $byName = ($rawN | ConvertFrom-Json) | Select-Object -First 1 }
+        if ($byName -and $pair.got -and $byName.appId -ne $pair.got.appId) {
+            Add-Check "'$($pair.n)' by name" $false `
+                "is $($byName.appId), but .env points at $($pair.got.appId) — two sets of registrations exist" -Advisory
+        }
+    }
+
+    # --- the verdict --------------------------------------------------------
+    $failed = @($checks | Where-Object { -not $_.Ok -and -not $_.Advisory })
+    $warned = @($checks | Where-Object { -not $_.Ok -and $_.Advisory })
+
+    if ($Verify) {
+        Write-Host ""
+        Write-Host "--- verify  (.env against Entra) ------------------------------" -ForegroundColor Green
+        foreach ($c in $checks) {
+            $tag, $color =
+                if ($c.Ok) { 'PASS', 'DarkGray' }
+                elseif ($c.Advisory) { 'WARN', 'Yellow' }
+                else { 'FAIL', 'Red' }
+            Write-Host ("  {0}  {1,-26} {2}" -f $tag, $c.Name, $c.Detail) -ForegroundColor $color
+        }
+        Write-Host ""
+        if ($failed.Count) {
+            Write-Host "$($failed.Count) check(s) failed, $($warned.Count) advisory." -ForegroundColor Red
+        } else {
+            Write-Host "All checks passed$(if ($warned.Count) { ", $($warned.Count) advisory" })." -ForegroundColor Green
+        }
+    } elseif ($failed.Count -or $warned.Count) {
+        # Not -Verify, so the pass/fail column is not printed — but silently
+        # sitting on a broken audience while showing a tidy report would be
+        # worse than noise. Name the count and the switch that explains it.
+        Write-Host ""
+        Write-Host "$($failed.Count) problem(s) and $($warned.Count) advisory — run with -Verify for the detail." -ForegroundColor Yellow
+    }
+
+    return $failed.Count
+}
+
 # --- stop condition, before anything is created -----------------------------
 # "Already configured" is the app client id having a value: that is the one
 # variable the stack cannot start without, and the one this script exists to
 # produce. An .env that has it is somebody's working configuration, and a
 # second run must not quietly point it at new registrations.
-if (-not $NoWrite -and (Test-Path $EnvFile)) {
-    $existing = Get-Content $EnvFile
-    $line = $existing | Where-Object { $_ -match '^\s*VITE_OAUTH_CLIENT_ID\s*=\s*\S' }
-    if ($line) {
-        Write-Host "$EnvFile is already configured ($($line -join '')) — nothing to do." -ForegroundColor Yellow
-        Write-Host "Run with -NoWrite to bring the registrations up to date without touching .env (the values are printed instead), or clear that line first." -ForegroundColor Yellow
-        exit 0
+#
+# THIS SITS ABOVE THE FRONT-DOOR PROMPT ON PURPOSE. It used to sit sixty lines
+# below it, so a configured stack was asked to confirm an origin, had the answer
+# validated, and was then told "nothing to do" — a question whose answer was
+# already destined for the bin. It depends on nothing but the file, so it goes
+# first, and what it prints is the configuration rather than two lines about
+# having declined to look at it.
+if ($Verify) {
+    exit (Show-EntraConfig -EnvFile $EnvFile -NamePrefix $NamePrefix -Verify)
+}
+if (-not $NoWrite -and (Test-Path $EnvFile) -and (Get-EnvValue $EnvFile 'VITE_OAUTH_CLIENT_ID')) {
+    Write-Host "$EnvFile is already configured — nothing to change. Here is what it points at:" -ForegroundColor Yellow
+    # Deliberately NOT propagated: this run was a no-op by design and used to
+    # exit 0 without needing az at all. Making it fail now, on a box with no
+    # Azure CLI or no login, would break a working invocation over a
+    # diagnostic. -Verify is the one that carries an exit code.
+    Show-EntraConfig -EnvFile $EnvFile -NamePrefix $NamePrefix | Out-Null
+    Write-Host ""
+    Write-Host "To CHECK it rather than read it:  .\setup-entra.ps1 -Verify" -ForegroundColor Yellow
+    Write-Host "To re-apply the registrations, clear VITE_OAUTH_CLIENT_ID in .env first." -ForegroundColor Yellow
+    exit 0
+}
+
+# --- where the browser reaches this stack -----------------------------------
+# Only reached when there is something to configure — see the stop condition.
+if (-not $FrontDoorUrl) {
+    $envDir = Split-Path $EnvFile -Parent
+    $suggested = $null
+    foreach ($candidate in @($EnvFile, (Join-Path $envDir '.env.example'))) {
+        $origin = Get-EnvValue $candidate 'PUBLIC_WEB_ORIGIN'
+        if ($origin -and $origin -notmatch '\{host\}') { $suggested = $origin.TrimEnd('/'); break }
+        $port = Get-EnvValue $candidate 'WEB_PORT'
+        if ($port) { $suggested = "http://localhost:$port"; break }
     }
+    if (-not $suggested) { $suggested = 'http://localhost:3000' }
+
+    Write-Host "The origin the browser uses to reach this stack." -ForegroundColor Cyan
+    Write-Host "The SPA's redirect URI becomes <origin>/oauth2_callback, matched EXACTLY by Entra."
+    $answer = Read-Host "Front door URL [$suggested]"
+    $FrontDoorUrl = if ([string]::IsNullOrWhiteSpace($answer)) { $suggested } else { $answer.Trim() }
+}
+
+if ($FrontDoorUrl -notmatch '^https?://') {
+    throw "FrontDoorUrl must start with http:// or https:// — got '$FrontDoorUrl'"
 }
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -320,16 +752,8 @@ Confirm-ServicePrincipal $spaAppId | Out-Null
 # --- 3. the CLI registration ------------------------------------------------
 $cliName = "$NamePrefix CLI"
 Write-Host "[3/3] $cliName" -ForegroundColor Cyan
-# The three loopback URIs semantius-cli tries, in order — and the value of
-# `redirect_uris` in /.well-known/semantius.json, which the Caddyfile states as
-# a literal. They are restated here because semantius-idp-config/oauth_clients.jsonc
-# — the source of truth for them — configures the BUNDLED idp and is not part of
-# this variant at all. Change them in one place, change them in all three.
-$CliRedirectUris = @(
-    'http://127.0.0.1:53682/callback'
-    'http://127.0.0.1:53683/callback'
-    'http://127.0.0.1:53684/callback'
-)
+# $CliRedirectUris — the three loopback URIs semantius-cli tries — is declared
+# at the top of this script, because the report checks them too.
 
 $cli = Get-AppByName $cliName
 if (-not $cli) {
