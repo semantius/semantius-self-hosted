@@ -113,6 +113,8 @@ $CliRedirectUris = @(
     'http://127.0.0.1:53682/callback'
     'http://127.0.0.1:53683/callback'
     'http://127.0.0.1:53684/callback'
+    'http://127.0.0.1:18682/callback'
+    'http://127.0.0.1:28682/callback'
 )
 
 function Invoke-Az {
@@ -752,7 +754,7 @@ Confirm-ServicePrincipal $spaAppId | Out-Null
 # --- 3. the CLI registration ------------------------------------------------
 $cliName = "$NamePrefix CLI"
 Write-Host "[3/3] $cliName" -ForegroundColor Cyan
-# $CliRedirectUris — the three loopback URIs semantius-cli tries — is declared
+# $CliRedirectUris — the five loopback URIs semantius-cli tries — is declared
 # at the top of this script, because the report checks them too.
 
 $cli = Get-AppByName $cliName

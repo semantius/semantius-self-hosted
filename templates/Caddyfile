@@ -152,7 +152,7 @@
 	"idp_type": "{$SEMANTIUS_IDP_TYPE}",
 	"idp_well_known": "{idp_wk}",
 	"client_id_cli": "{$CLI_OAUTH_CLIENT_ID}",
-	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback", "http://127.0.0.1:18682/callback", "http://127.0.0.1:28682/callback"],
 	"scope": "{$VITE_OAUTH_SCOPE}",
 	"audience": "{$VITE_OAUTH_AUDIENCE}",
 	# >>> feature:bundled-idp

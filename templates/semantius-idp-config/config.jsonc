@@ -220,6 +220,18 @@
     // — the idp refuses to start otherwise.
     "protectedResources": [{ "path": "/rest" }],
 
+    // The RFC 8628 device grant (idp FR-OIDC-19, D133): what `semantius login`
+    // uses on a box with no browser. It prints a code; the person opens
+    // {issuer}/device anywhere, signs in, and approves. Off by default in the
+    // idp, and needed on here for the `semantius-cli` client, which lists the
+    // grant in oauth_clients.jsonc — the idp refuses to start when a client
+    // lists it and this is off.
+    //
+    // NEEDS semantius-idp v0.6.9 or later: older images refuse this key at
+    // start-up. `latest` is fine; a SEMANTIUS_IDP_VERSION pinned below 0.6.9
+    // is not.
+    "deviceAuthorization": { "enabled": true },
+
     // false: a client removed from oauth_clients.jsonc is disabled and its tokens
     // revoked. true deletes its rows instead.
     "reconcile": { "prune": false }

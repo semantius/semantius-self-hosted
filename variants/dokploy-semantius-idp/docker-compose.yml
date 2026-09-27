@@ -888,6 +888,18 @@ configs:
           // — the idp refuses to start otherwise.
           "protectedResources": [{ "path": "/rest" }],
 
+          // The RFC 8628 device grant (idp FR-OIDC-19, D133): what `semantius login`
+          // uses on a box with no browser. It prints a code; the person opens
+          // {issuer}/device anywhere, signs in, and approves. Off by default in the
+          // idp, and needed on here for the `semantius-cli` client, which lists the
+          // grant in oauth_clients.jsonc — the idp refuses to start when a client
+          // lists it and this is off.
+          //
+          // NEEDS semantius-idp v0.6.9 or later: older images refuse this key at
+          // start-up. `latest` is fine; a SEMANTIUS_IDP_VERSION pinned below 0.6.9
+          // is not.
+          "deviceAuthorization": { "enabled": true },
+
           // false: a client removed from oauth_clients.jsonc is disabled and its tokens
           // revoked. true deletes its rows instead.
           "reconcile": { "prune": false }
@@ -1061,19 +1073,33 @@ configs:
             // for a loopback IP (127.0.0.0/8, [::1]; NOT the name `localhost`) the
             // idp compares scheme, host, path and query and ignores the PORT, per
             // RFC 8252 §7.3. So the CLI may bind any port and still match, and the
-            // three entries are the three it actually tries, in order, written out
+            // five entries are the five it actually tries, in order, written out
             // so the registration reads as what the CLI does rather than relying on
             // the carve-out.
             "redirectUris": [
               "http://127.0.0.1:53682/callback",
               "http://127.0.0.1:53683/callback",
-              "http://127.0.0.1:53684/callback"
+              "http://127.0.0.1:53684/callback",
+              "http://127.0.0.1:18682/callback",
+              "http://127.0.0.1:28682/callback"
             ],
 
             // Same set as the SPA. `offline_access` is what gets the CLI a refresh
             // token, so a signed-in terminal keeps working past the 15-minute
             // access-token TTL without reopening a browser.
             "scopes": ["openid", "profile", "email", "offline_access"],
+
+            // The loopback redirect above for a machine with a browser, and the
+            // device grant for one without (`oauth.deviceAuthorization` in
+            // config.jsonc). `authorization_code` stays: the idp issues a refresh
+            // token only to a client allowed it, so a device-only entry would sign
+            // the terminal in for one fifteen-minute access token — and the idp
+            // refuses such an entry at start-up for exactly that reason.
+            "grantTypes": [
+              "authorization_code",
+              "refresh_token",
+              "urn:ietf:params:oauth:grant-type:device_code"
+            ],
 
             // A file-declared client defaults to `skipConsent: true` — an operator
             // wrote the entry down, so asking the user to approve an application
@@ -1247,7 +1273,7 @@ configs:
       	"idp_type": "{$$SEMANTIUS_IDP_TYPE}",
       	"idp_well_known": "{idp_wk}",
       	"client_id_cli": "{$$CLI_OAUTH_CLIENT_ID}",
-      	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+      	"redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback", "http://127.0.0.1:18682/callback", "http://127.0.0.1:28682/callback"],
       	"scope": "{$$VITE_OAUTH_SCOPE}",
       	"audience": "{$$VITE_OAUTH_AUDIENCE}",
       	"gateway_url": "{pscheme}://{http.request.hostport}/gateway/rest",

@@ -240,9 +240,9 @@ Then **API permissions** → add the API's `access_as_user` scope.
 
 **New registration → Authentication → Add a platform → Mobile and desktop
 applications**, redirect URIs `http://127.0.0.1:53682/callback`, `:53683`,
-`:53684`. Turn **Allow public client flows** on. Same API permission.
+`:53684`, `:18682`, `:28682`. Turn **Allow public client flows** on. Same API permission.
 
-All three URIs, not one: Entra matches the port, and the CLI falls to the next
+All five URIs, not one: Entra matches the port, and the CLI falls to the next
 one when a port is already taken on the user's machine. If you would rather not
 type them, `./setup-entra.ps1` sets them on an existing registration too — see
 [The CLI](#the-cli).
@@ -297,8 +297,8 @@ until your `.env` has it. `./setup-entra.ps1` writes it like every other value.
 **Why it cannot be the web app's client id.** A CLI has no web server to receive
 the authorization code, so it starts a throwaway listener on loopback for the
 length of the sign-in and has the browser redirected there — hence the
-`http://127.0.0.1:53682-53684/callback` redirect URIs, the three it tries in
-order, and **Allow public client flows**. The web app's registration is the
+`http://127.0.0.1:{53682,53683,53684,18682,28682}/callback` redirect URIs, the
+five it tries in order, and **Allow public client flows**. The web app's registration is the
 *single-page application* platform, which Entra refuses to redeem a code for
 outside a browser origin (`AADSTS9002326`).
 

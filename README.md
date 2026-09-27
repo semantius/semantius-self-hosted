@@ -672,7 +672,7 @@ up as an error page on the idp naming the offending URI.
 
 Two clients ship in the file: `public-client` (the web app above) and
 `semantius-cli` — `type: "native"`, public, PKCE, catching its code on
-`http://127.0.0.1:5368{2,3,4}/callback`. Loopback IPs get RFC 8252 §7.3's
+`http://127.0.0.1:{53682,53683,53684,18682,28682}/callback`. Loopback IPs get RFC 8252 §7.3's
 port carve-out, so a CLI binding any other 127.0.0.1 port still matches;
 `localhost` does not, and is compared whole.
 
@@ -732,7 +732,8 @@ set in `.env`:
   Nothing derives either one, so left alone the document keeps announcing the
   bundled idp: `semantius`, and a `semantius-cli` client id that does not exist
   at your issuer. Register a public client there whose redirect URIs are
-  `http://127.0.0.1:53682/callback`, `:53683` and `:53684`, and name it here.
+  `http://127.0.0.1:53682/callback`, `:53683`, `:53684`, `:18682` and
+  `:28682`, and name it here.
 
 Your issuer must mint a role claim saying `authenticated` — as `"role"`, or as an
 entry in a `roles` array with `PGRST_JWT_ROLE_CLAIM_KEY=.roles[0]`.
@@ -972,7 +973,7 @@ curl -fsS https://yourdomain.com/.well-known/semantius.json | jq .
   "idp_type": "semantius",
   "idp_well_known": "https://yourdomain.com/.well-known/openid-configuration",
   "client_id_cli": "semantius-cli",
-  "redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback"],
+  "redirect_uris": ["http://127.0.0.1:53682/callback", "http://127.0.0.1:53683/callback", "http://127.0.0.1:53684/callback", "http://127.0.0.1:18682/callback", "http://127.0.0.1:28682/callback"],
   "scope": "",
   "audience": "semantius://api",
   "gateway_url": "https://yourdomain.com/gateway/rest",
